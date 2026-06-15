@@ -165,6 +165,41 @@ same I2C bootstrap write protocol before reading the chip id. This mirrors the
 observed bootstrap requirement that a reset clear must occur before chip-id
 access.
 
+## Logging Backend
+
+`log!` and `logln!` route through a small logging facade. The call sites do not
+care whether output goes to UART or semihosting, because nobody needs debug code
+with tentacles.
+
+Default logging uses the Raspberry Pi 5 debug UART:
+
+```sh
+cargo xbuild
+```
+
+Equivalent explicit feature selection:
+
+```sh
+cargo xbuild --features log-uart
+```
+
+For semihosting logs, disable default features and select the desired runtime
+features explicitly:
+
+```sh
+cargo run -p xtask -- build --no-default-features --features "allow-fw-parts-fallback log-semihosting"
+```
+
+The two logging backends are mutually exclusive:
+
+- `log-uart`
+- `log-semihosting`
+
+If neither backend is selected, or both are selected, compilation fails. The
+semihosting backend uses AArch64 semihosting `SYS_WRITEC` via `hlt #0xf000`, so
+it requires a debugger or emulator configured to handle semihosting traps. On
+real hardware without semihosting support, use `log-uart`.
+
 ## Build
 
 Use a nightly Rust toolchain with `rust-src`, `llvm-tools-preview`, and the
@@ -239,7 +274,9 @@ VPU bootmain flows such as `clear_rp1_cache_globals()`, PCIe2 reset/init, and
 RP1 PCIe enumeration are useful references but are not required for the first
 PoC goal: reload RP1 firmware, continue using BCM2712 SDHC, then boot Linux.
 
-## Expected UART Order
+## Expected Log Order
+
+The following order is the same for UART and semihosting backends:
 
 ```text
 [BOOT] start EL2

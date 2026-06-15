@@ -25,6 +25,12 @@ mod placement;
 mod rp1_bootstrap;
 mod rp1_image;
 
+#[cfg(all(feature = "log-uart", feature = "log-semihosting"))]
+compile_error!("features `log-uart` and `log-semihosting` are mutually exclusive");
+
+#[cfg(not(any(feature = "log-uart", feature = "log-semihosting")))]
+compile_error!("select exactly one log backend feature: `log-uart` or `log-semihosting`");
+
 global_asm!(
     r#"
     .section .text.boot, "ax"
@@ -83,7 +89,7 @@ pub extern "C" fn rust_main() -> ! {
 }
 
 fn main_flow() -> Result<(), BootError> {
-    uart::init();
+    logging::init();
     logln!("[BOOT] start EL2");
     timer::init();
     logln!("[TLS] init skipped: static BSP TLS symbols preserved by linker");
@@ -323,6 +329,7 @@ pub mod timer {
     }
 }
 
+#[cfg(feature = "log-uart")]
 pub mod uart {
     use core::fmt;
     use core::fmt::Write;
@@ -376,19 +383,99 @@ pub mod uart {
     }
 }
 
+#[cfg(feature = "log-semihosting")]
+pub mod semihosting {
+    use core::fmt;
+    use core::fmt::Write;
+
+    const SYS_WRITEC: usize = 0x03;
+
+    pub fn init() {}
+
+    pub fn puts(s: &str) {
+        for b in s.bytes() {
+            putc(b);
+        }
+    }
+
+    pub fn putc(b: u8) {
+        if b == b'\n' {
+            putc(b'\r');
+        }
+        let byte = b;
+        // SAFETY: AArch64 semihosting uses x0 for the operation, x1 for the argument
+        // pointer, and `hlt #0xf000` as the trap. SYS_WRITEC reads one byte from x1.
+        unsafe {
+            core::arch::asm!(
+                "hlt #0xf000",
+                in("x0") SYS_WRITEC,
+                in("x1") &byte as *const u8 as usize,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+
+    pub fn _print(args: fmt::Arguments<'_>) {
+        let _ = Writer.write_fmt(args);
+    }
+
+    struct Writer;
+
+    impl fmt::Write for Writer {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            puts(s);
+            Ok(())
+        }
+    }
+}
+
+pub mod logging {
+    use core::fmt;
+
+    #[cfg(feature = "log-uart")]
+    pub fn init() {
+        crate::uart::init();
+    }
+
+    #[cfg(feature = "log-semihosting")]
+    pub fn init() {
+        crate::semihosting::init();
+    }
+
+    #[cfg(feature = "log-uart")]
+    pub fn puts(s: &str) {
+        crate::uart::puts(s);
+    }
+
+    #[cfg(feature = "log-semihosting")]
+    pub fn puts(s: &str) {
+        crate::semihosting::puts(s);
+    }
+
+    #[cfg(feature = "log-uart")]
+    pub fn _print(args: fmt::Arguments<'_>) {
+        crate::uart::_print(args);
+    }
+
+    #[cfg(feature = "log-semihosting")]
+    pub fn _print(args: fmt::Arguments<'_>) {
+        crate::semihosting::_print(args);
+    }
+}
+
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => {
-        $crate::uart::_print(core::format_args!($($arg)*))
+        $crate::logging::_print(core::format_args!($($arg)*))
     };
 }
 
 #[macro_export]
 macro_rules! logln {
     () => {
-        $crate::uart::puts("\n")
+        $crate::logging::puts("\n")
     };
     ($fmt:literal $(, $($arg:tt)+)?) => {
-        $crate::uart::_print(core::format_args!(concat!($fmt, "\n") $(, $($arg)+)?))
+        $crate::logging::_print(core::format_args!(concat!($fmt, "\n") $(, $($arg)+)?))
     };
 }
