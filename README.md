@@ -83,6 +83,15 @@ CMD/DATA software reset using a minimal MMIO quiesce path.
 This PoC currently uses a static 8 MiB bump allocator. It does not yet build a
 full allocator from DTB memory and reserved-memory nodes.
 
+## DTB Placement
+
+The firmware-provided DTB is parsed at `0x20000000`. The patched Linux DTB is
+written to `0x20200000`, not back over the input DTB. This keeps the parser input
+region and the Linux handoff DTB region separate during bringup.
+
+After all SD files are loaded, SDHC is quiesced before the final DTB patch and
+Linux handoff.
+
 ## SD Card Files
 
 Required:
@@ -208,6 +217,9 @@ the reset-clear sequence. The code has `RP1_PROBE_CHIP_ID_REQUIRED=true` by
 default; during early bringup it can be changed to allow firmware writes to
 continue after a probe read failure.
 
+To avoid doubling this read-side risk, `reset_into_bootrom()` performs the
+chip-id probe once and returns the result to the caller.
+
 ## Known Limits
 
 - RP1 PCIe re-enumeration after firmware reload is not fully implemented in this
@@ -244,6 +256,8 @@ PoC goal: reload RP1 firmware, continue using BCM2712 SDHC, then boot Linux.
 [RP1BOOT] reset clear for chip-id probe
 [RP1BOOT] i2c 0x43 ack ok
 [RP1BOOT] chip id = ...
+# If chip-id probing is made optional for bringup, this may instead be:
+# [RP1BOOT] chip id unavailable; continuing with write-only bootstrap path
 [RP1BOOT] image loaded
 [RP1BOOT] scratch programmed
 [RP1BOOT] proc0 started
@@ -252,8 +266,8 @@ PoC goal: reload RP1 firmware, continue using BCM2712 SDHC, then boot Linux.
 [KERNEL] gzip detected / not gzip
 [KERNEL] Image header ok, entry=...
 [SD] /initramfs_2712 ok: size=...
-[DTB] initrd-start=..., initrd-end=...
 [SDHC] quiesce begin
 [SDHC] quiesce done
+[DTB] initrd-start=..., initrd-end=...
 [LINUX] jumping at EL2
 ```

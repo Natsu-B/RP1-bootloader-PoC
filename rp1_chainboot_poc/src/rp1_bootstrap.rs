@@ -35,7 +35,7 @@ where
         Self { i2c, run }
     }
 
-    pub fn reset_into_bootrom(&mut self) -> Result<(), BootError> {
+    pub fn reset_into_bootrom(&mut self) -> Result<Option<u32>, BootError> {
         crate::logln!("[RP1BOOT] reset low");
         self.run.set_low()?;
         crate::timer::delay_micros(500_000);
@@ -49,11 +49,10 @@ where
 
         let mut last = BootError::I2cNack;
         for _ in 0..50 {
-            let mut id = [0u8; 4];
-            match self.read_mem(RP1_CHIP_ID, &mut id) {
-                Ok(()) => {
+            match self.probe_chip_id() {
+                Ok(chip_id) => {
                     crate::logln!("[RP1BOOT] i2c 0x43 ack ok");
-                    return Ok(());
+                    return Ok(Some(chip_id));
                 }
                 Err(err) => {
                     last = err;
@@ -68,7 +67,7 @@ where
             Err(last)
         } else {
             crate::logln!("[RP1BOOT] chip-id probe is optional in this build; continuing");
-            Ok(())
+            Ok(None)
         }
     }
 

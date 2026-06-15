@@ -83,16 +83,16 @@ SECTIONS {
     *(.eh_frame*)
   }
 
+  . = 0x3000000;
+  _LINUX_IMAGE = .;
+
   ASSERT(_PROGRAM_START == 0x80000, "PROGRAM must start at 0x80000")
   ASSERT(_PROGRAM_START < _PROGRAM_END, "PROGRAM range invalid")
   ASSERT(_BSS_START <= _BSS_END, "BSS range invalid")
   ASSERT(_STACK_BOTTOM + 0x10000 <= _STACK_TOP, "STACK shortage")
   ASSERT((_STACK_BOTTOM & 0xFFF) == 0, "STACK_BOTTOM must be 4KB aligned")
   ASSERT((_STACK_TOP & 0xF) == 0, "STACK_TOP not 16-byte aligned")
-  ASSERT(_STACK_TOP < 0x3000000, "STACK_TOP must be below Linux image")
+  ASSERT(_STACK_TOP < _LINUX_IMAGE, "STACK_TOP must be below Linux image")
   ASSERT(_LINUX_IMAGE == 0x3000000, "Linux image base changed")
   ASSERT(__el2_tls_bsp_end >= __el2_tls_bsp_start, "TLS BSP range invalid")
-
-  . = 0x3000000;
-  _LINUX_IMAGE = .;
 }

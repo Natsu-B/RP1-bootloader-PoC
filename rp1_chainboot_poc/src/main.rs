@@ -96,6 +96,7 @@ fn main_flow() -> Result<(), BootError> {
     placement::check_no_overlap(&[
         placement::program_range(),
         placement::stack_range(),
+        placement::Range::new("dtb-input", placement::DTB_PTR, dtb.get_size()),
         placement::Range::new(
             "kernel",
             placement::KERNEL_LOAD_BASE,
@@ -189,13 +190,9 @@ fn main_flow() -> Result<(), BootError> {
     let i2c = bcm2712_i2c::Bcm2712I2c::from_dtb_or_fallback(&dtb);
     let run = bcm2712_aon::Rp1RunPin::from_dtb_or_fallback(&dtb);
     let mut bootstrap = rp1_bootstrap::Rp1Bootstrap::new(i2c, run);
-    bootstrap.reset_into_bootrom()?;
-    match bootstrap.probe_chip_id() {
-        Ok(chip_id) => logln!("[RP1BOOT] chip id = 0x{:08x}", chip_id),
-        Err(err) if !rp1_bootstrap::RP1_PROBE_CHIP_ID_REQUIRED => {
-            logln!("[RP1BOOT] chip id probe skipped after error: {:?}", err);
-        }
-        Err(err) => return Err(err),
+    match bootstrap.reset_into_bootrom()? {
+        Some(chip_id) => logln!("[RP1BOOT] chip id = 0x{:08x}", chip_id),
+        None => logln!("[RP1BOOT] chip id unavailable; continuing with write-only bootstrap path"),
     }
     bootstrap.load_and_start(&rp1_image)?;
 
@@ -225,6 +222,8 @@ fn main_flow() -> Result<(), BootError> {
     let initrd_end = initrd_start + initramfs.len();
 
     let cmdline = boot_files::read_optional_file(sdhc, "/cmdline.txt")?;
+    linux::quiesce_sdhc_from_dtb_or_fallback(&dtb)?;
+
     let patched_dtb = dtb_patch::patch_dtb_for_linux(
         &dtb,
         placement::DTB_COPY_BASE,
@@ -234,7 +233,6 @@ fn main_flow() -> Result<(), BootError> {
         cmdline.as_deref(),
     )?;
 
-    linux::quiesce_sdhc_from_dtb_or_fallback(&dtb)?;
     linux::clean_dcache_poc(kernel.base, image.image_size);
     linux::clean_dcache_poc(initrd_start, initramfs.len());
     linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
