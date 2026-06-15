@@ -103,7 +103,9 @@ pub fn invalidate_icache_all() {
     }
 }
 
+#[unsafe(link_section = ".text.boot.handoff")]
 pub unsafe fn jump_to_linux_el2(kernel_entry: usize, dtb_addr: usize) -> ! {
+    crate::logln!("[LINUX] preparing EL2 handoff: HCR_EL2=RW, CNTVOFF_EL2=0, CPTR_EL2=0");
     crate::logln!("[LINUX] jumping at EL2");
     // SAFETY: this is the terminal handoff path. It masks interrupts, disables stage-2 and EL2
     // stage-1 MMU/cache bits, sets the arm64 boot protocol registers, and branches to the Image
@@ -114,8 +116,9 @@ pub unsafe fn jump_to_linux_el2(kernel_entry: usize, dtb_addr: usize) -> ! {
             "dsb sy",
             "isb",
             "msr vttbr_el2, xzr",
-            "mrs x2, hcr_el2",
-            "orr x2, x2, #(1 << 31)",
+            "msr cntvoff_el2, xzr",
+            "msr cptr_el2, xzr",
+            "mov x2, #(1 << 31)",
             "msr hcr_el2, x2",
             "isb",
             "mrs x2, sctlr_el2",

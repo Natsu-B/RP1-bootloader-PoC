@@ -3,7 +3,7 @@ use crate::BootError;
 pub const RP1_IMG_MAGIC: u32 = u32::from_le_bytes(*b"RP1I");
 pub const RP1_SRAM_BASE: u32 = 0x2000_0000;
 pub const RP1_FALLBACK_LOAD_ADDR: u32 = 0x2000_0000;
-pub const RP1_FALLBACK_ENTRY: u32 = 0x2000_0001;
+pub const RP1_FALLBACK_ENTRY: u32 = 0x2000_0141;
 pub const RP1_FALLBACK_STACK: u32 = 0x1000_30d0;
 pub const RP1_MAX_IMAGE_LEN: usize = 0x1_0000;
 const RP1_HEADER_LEN_MIN: usize = 0x20;

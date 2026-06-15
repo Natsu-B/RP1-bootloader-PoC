@@ -61,7 +61,10 @@ pub enum BootError {
     Rp1ImageInvalid,
     Rp1ImageCrcMismatch,
     Rp1ImageTooLarge,
-    SdFile,
+    SdFileNotFound,
+    SdMount,
+    SdOpen,
+    SdRead,
     Gzip,
     DtbPatch,
     LinuxImageInvalid,
@@ -88,7 +91,7 @@ fn main_flow() -> Result<(), BootError> {
 
     let dtb = DtbParser::init(placement::DTB_PTR).map_err(|_| BootError::DtbPatch)?;
     logln!("[DTB] parse ok");
-    logln!("[ALLOC] init ok");
+    logln!("[ALLOC] static bump allocator ok: size={} bytes", HEAP_SIZE);
 
     placement::check_no_overlap(&[
         placement::program_range(),
@@ -116,11 +119,11 @@ fn main_flow() -> Result<(), BootError> {
     ])?;
 
     let _rp1_cfg = bcm2712::init_rp1(&dtb).map_err(|_| BootError::El2HandoffPreparationFailure)?;
-    logln!("[PCIE] init ok");
+    logln!("[RP1] init_rp1 ok");
     logln!("[RP1] existing RP1 visible");
 
     let sdhc: &'static dyn BlockDevice =
-        bcm2712::sdhc::init_from_dtb(&dtb).map_err(|_| BootError::SdFile)?;
+        bcm2712::sdhc::init_from_dtb(&dtb).map_err(|_| BootError::SdMount)?;
     logln!("[SDHC] init ok");
 
     boot_files::probe_file(sdhc, "/config.txt", "/config.txt before reset")?;
@@ -132,7 +135,7 @@ fn main_flow() -> Result<(), BootError> {
         logln!("[SD] /RP1.img not found");
     }
 
-    let mut fw_scratch = alloc::vec![0u8; placement::RP1_IMG_SCRATCH_MAX];
+    let fw_scratch = placement::rp1_scratch_slice();
     let fw1_holder;
     let fw2_holder;
     let rp1_image = if let Some(ref image_bytes) = rp1_img_file {
@@ -146,6 +149,15 @@ fn main_flow() -> Result<(), BootError> {
         );
         image
     } else {
+        if cfg!(feature = "require-rp1-img") {
+            return Err(BootError::SdFileNotFound);
+        }
+        logln!(
+            "[RP1IMG] fallback fw-parts uses configured entry=0x{:08x} stack=0x{:08x}",
+            rp1_image::RP1_FALLBACK_ENTRY | 1,
+            rp1_image::RP1_FALLBACK_STACK
+        );
+        logln!("[RP1IMG] prefer /RP1.img for exact entry/stack");
         fw1_holder = boot_files::read_required_file(sdhc, "/rp1c0fw1.bin")?;
         logln!(
             "[SD] /rp1c0fw1.bin ok: size={} checksum=0x{:08x}",
@@ -158,7 +170,7 @@ fn main_flow() -> Result<(), BootError> {
             fw2_holder.len(),
             rp1_image::checksum32(&fw2_holder)
         );
-        rp1_image::build_from_fw_parts(&fw1_holder, &fw2_holder, &mut fw_scratch)?
+        rp1_image::build_from_fw_parts(&fw1_holder, &fw2_holder, fw_scratch)?
     };
 
     let source = match rp1_image.source {
@@ -178,8 +190,13 @@ fn main_flow() -> Result<(), BootError> {
     let run = bcm2712_aon::Rp1RunPin::from_dtb_or_fallback(&dtb);
     let mut bootstrap = rp1_bootstrap::Rp1Bootstrap::new(i2c, run);
     bootstrap.reset_into_bootrom()?;
-    let chip_id = bootstrap.probe_chip_id()?;
-    logln!("[RP1BOOT] chip id = 0x{:08x}", chip_id);
+    match bootstrap.probe_chip_id() {
+        Ok(chip_id) => logln!("[RP1BOOT] chip id = 0x{:08x}", chip_id),
+        Err(err) if !rp1_bootstrap::RP1_PROBE_CHIP_ID_REQUIRED => {
+            logln!("[RP1BOOT] chip id probe skipped after error: {:?}", err);
+        }
+        Err(err) => return Err(err),
+    }
     bootstrap.load_and_start(&rp1_image)?;
 
     boot_files::probe_file(sdhc, "/config.txt", "/config.txt after reset")?;

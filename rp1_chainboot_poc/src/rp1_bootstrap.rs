@@ -11,6 +11,9 @@ pub const RP1_SCRATCH_STACK: u32 = 0x4015_4018;
 pub const RP1_BOOT_CTRL_A: u32 = 0x4001_0008;
 pub const RP1_BOOT_COMMAND: u32 = 0x4015_4000;
 pub const RP1_CHIP_ID: u32 = 0x4000_0000;
+pub const RP1_RESETS_CLR: u32 = 0x4001_7004;
+pub const RP1_RESETS_ALL_CLR_MASK_FOR_CHIP_ID: u32 = 0x0080_0000;
+pub const RP1_PROBE_CHIP_ID_REQUIRED: bool = true;
 
 pub trait Rp1I2cBus {
     type Error;
@@ -40,6 +43,10 @@ where
         self.run.set_high()?;
         crate::timer::delay_micros(10_000);
 
+        self.write32(RP1_RESETS_CLR, RP1_RESETS_ALL_CLR_MASK_FOR_CHIP_ID)?;
+        crate::logln!("[RP1BOOT] reset clear for chip-id probe");
+        crate::timer::delay_micros(1_000);
+
         let mut last = BootError::I2cNack;
         for _ in 0..50 {
             let mut id = [0u8; 4];
@@ -54,7 +61,15 @@ where
                 }
             }
         }
-        Err(last)
+        crate::logln!(
+            "[RP1BOOT] chip-id ack/read failed after reset clear; check I2C repeated-start behavior"
+        );
+        if RP1_PROBE_CHIP_ID_REQUIRED {
+            Err(last)
+        } else {
+            crate::logln!("[RP1BOOT] chip-id probe is optional in this build; continuing");
+            Ok(())
+        }
     }
 
     pub fn probe_chip_id(&mut self) -> Result<u32, BootError> {

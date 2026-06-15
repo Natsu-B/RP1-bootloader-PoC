@@ -309,6 +309,7 @@ dependencies = [
  "embedded-hal",
  "embedded-hal-bus",
  "file",
+ "filesystem",
  "miniz_oxide",
  "mutex",
 ]

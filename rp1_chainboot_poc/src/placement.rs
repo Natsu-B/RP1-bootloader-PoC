@@ -12,7 +12,7 @@ pub const RP1_IMG_SCRATCH_BASE: usize = 0x1ffe_0000;
 
 unsafe extern "C" {
     static _PROGRAM_START: u8;
-    static _PROGRAM_END: u8;
+    static _BSS_END: u8;
     static _STACK_BOTTOM: u8;
     static _STACK_TOP: u8;
 }
@@ -38,8 +38,14 @@ pub fn program_range() -> Range {
     Range {
         name: "program",
         start: (&raw const _PROGRAM_START) as usize,
-        end: (&raw const _PROGRAM_END) as usize,
+        end: (&raw const _BSS_END) as usize,
     }
+}
+
+pub fn rp1_scratch_slice() -> &'static mut [u8] {
+    // SAFETY: RP1_IMG_SCRATCH_BASE is a fixed physical scratch range checked against the
+    // bootloader image, stack, kernel, initramfs, and DTB placement before use.
+    unsafe { core::slice::from_raw_parts_mut(RP1_IMG_SCRATCH_BASE as *mut u8, RP1_IMG_SCRATCH_MAX) }
 }
 
 pub fn stack_range() -> Range {
