@@ -1,0 +1,18 @@
+[package]
+name = "rp1_chainboot_poc"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[dependencies]
+arch_hal = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "5b093e5498598f52a2ecef06513182ae6a53f96e", package = "arch_hal" }
+dtb = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "5b093e5498598f52a2ecef06513182ae6a53f96e", package = "dtb" }
+file = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "5b093e5498598f52a2ecef06513182ae6a53f96e", package = "file" }
+block-device-api = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "5b093e5498598f52a2ecef06513182ae6a53f96e", package = "block-device-api" }
+allocator = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "5b093e5498598f52a2ecef06513182ae6a53f96e", package = "allocator", features = ["no-alloc-error-handler"] }
+mutex = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "5b093e5498598f52a2ecef06513182ae6a53f96e", package = "mutex" }
+
+embedded-hal = { version = "1", default-features = false }
+embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"] }
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+crc32fast = { version = "1", default-features = false }

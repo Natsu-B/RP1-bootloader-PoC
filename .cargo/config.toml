@@ -1,0 +1,8 @@
+[alias]
+xbuild = "run -p xtask -- build"
+xrun = "run -p xtask -- run"
+
+[target.aarch64-unknown-none-softfloat]
+rustflags = [
+    "-C", "link-arg=-Tlinker/aarch64.lds",
+]

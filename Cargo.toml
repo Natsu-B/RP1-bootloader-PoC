@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = [
+    "rp1_chainboot_poc",
+    "xtask",
+]
+default-members = ["xtask"]
+
+[profile.release]
+panic = "abort"
+debug = true
+
+[profile.dev]
+panic = "abort"
