@@ -8,6 +8,8 @@ build = "build.rs"
 default = ["allow-fw-parts-fallback", "log-uart"]
 allow-fw-parts-fallback = []
 require-rp1-img = []
+skip-rp1-reload = []
+continue-on-rp1-bootstrap-failure = []
 log-uart = []
 log-semihosting = []
 

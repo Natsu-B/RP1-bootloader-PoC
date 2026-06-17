@@ -206,84 +206,90 @@ fn main_flow() -> Result<(), BootError> {
 
     boot_files::probe_file(sdhc, "/config.txt", "/config.txt before reset")?;
 
-    let rp1_img_file = read_first_optional_file(
-        sdhc,
-        &["/RP1.img", "/rp1/RP1.img", "/rp1/rp1.img", "/RP1/RP1.IMG"],
-    )?;
-    if rp1_img_file.is_some() {
-        logln!("[SD] /RP1.img found");
-    } else {
-        logln!("[SD] /RP1.img not found");
-    }
-
-    let fw_scratch = placement::rp1_scratch_slice();
+    let rp1_img_file;
     let fw1_holder;
     let fw2_holder;
-    let rp1_image = if let Some(ref image_bytes) = rp1_img_file {
-        let image = rp1_image::parse_rp1_img(image_bytes)?;
-        logln!(
-            "[SD] /RP1.img ok: payload={} load=0x{:x} entry=0x{:x} stack=0x{:x}",
-            image.payload.len(),
-            image.load_addr,
-            image.entry,
-            image.stack
-        );
-        Some(image)
+    let rp1_image = if cfg!(feature = "skip-rp1-reload") {
+        logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
+        None
     } else {
-        if cfg!(feature = "require-rp1-img") {
-            return Err(BootError::SdFileNotFound);
+        rp1_img_file = read_first_optional_file(
+            sdhc,
+            &["/RP1.img", "/rp1/RP1.img", "/rp1/rp1.img", "/RP1/RP1.IMG"],
+        )?;
+        if rp1_img_file.is_some() {
+            logln!("[SD] /RP1.img found");
+        } else {
+            logln!("[SD] /RP1.img not found");
         }
-        logln!(
-            "[RP1IMG] fallback fw-parts uses configured entry=0x{:08x} stack=0x{:08x}",
-            rp1_image::RP1_FALLBACK_ENTRY | 1,
-            rp1_image::RP1_FALLBACK_STACK
-        );
-        logln!("[RP1IMG] prefer /RP1.img for exact entry/stack");
-        let fw1_candidate = read_first_optional_file(
-            sdhc,
-            &[
-                "/rp1c0fw1.bin",
-                "/rp1/rp1c0fw1.bin",
-                "/RP1/FW1.BIN",
-                "/RP1C0FW1.BIN",
-            ],
-        )?;
-        let fw2_candidate = read_first_optional_file(
-            sdhc,
-            &[
-                "/rp1c0fw2.bin",
-                "/rp1/rp1c0fw2.bin",
-                "/RP1/FW2.BIN",
-                "/RP1C0FW2.BIN",
-            ],
-        )?;
-        match (fw1_candidate, fw2_candidate) {
-            (Some(fw1), Some(fw2)) => {
-                fw1_holder = fw1;
-                fw2_holder = fw2;
-                logln!(
-                    "[SD] rp1 fw part0 ok: size={} checksum=0x{:08x}",
-                    fw1_holder.len(),
-                    rp1_image::checksum32(&fw1_holder)
-                );
-                logln!(
-                    "[SD] rp1 fw part1 ok: size={} checksum=0x{:08x}",
-                    fw2_holder.len(),
-                    rp1_image::checksum32(&fw2_holder)
-                );
-                Some(rp1_image::build_from_fw_parts(
-                    &fw1_holder,
-                    &fw2_holder,
-                    fw_scratch,
-                )?)
+
+        let fw_scratch = placement::rp1_scratch_slice();
+        if let Some(ref image_bytes) = rp1_img_file {
+            let image = rp1_image::parse_rp1_img(image_bytes)?;
+            logln!(
+                "[SD] /RP1.img ok: payload={} load=0x{:x} entry=0x{:x} stack=0x{:x}",
+                image.payload.len(),
+                image.load_addr,
+                image.entry,
+                image.stack
+            );
+            Some(image)
+        } else {
+            if cfg!(feature = "require-rp1-img") {
+                return Err(BootError::SdFileNotFound);
             }
-            (None, _) => {
-                logln!("[RP1IMG] fw part0 not found; skipping RP1 bootstrap");
-                None
-            }
-            (_, None) => {
-                logln!("[RP1IMG] fw part1 not found; skipping RP1 bootstrap");
-                None
+            logln!(
+                "[RP1IMG] fallback fw-parts uses configured entry=0x{:08x} stack=0x{:08x}",
+                rp1_image::RP1_FALLBACK_ENTRY | 1,
+                rp1_image::RP1_FALLBACK_STACK
+            );
+            logln!("[RP1IMG] prefer /RP1.img for exact entry/stack");
+            let fw1_candidate = read_first_optional_file(
+                sdhc,
+                &[
+                    "/rp1c0fw1.bin",
+                    "/rp1/rp1c0fw1.bin",
+                    "/RP1/FW1.BIN",
+                    "/RP1C0FW1.BIN",
+                ],
+            )?;
+            let fw2_candidate = read_first_optional_file(
+                sdhc,
+                &[
+                    "/rp1c0fw2.bin",
+                    "/rp1/rp1c0fw2.bin",
+                    "/RP1/FW2.BIN",
+                    "/RP1C0FW2.BIN",
+                ],
+            )?;
+            match (fw1_candidate, fw2_candidate) {
+                (Some(fw1), Some(fw2)) => {
+                    fw1_holder = fw1;
+                    fw2_holder = fw2;
+                    logln!(
+                        "[SD] rp1 fw part0 ok: size={} checksum=0x{:08x}",
+                        fw1_holder.len(),
+                        rp1_image::checksum32(&fw1_holder)
+                    );
+                    logln!(
+                        "[SD] rp1 fw part1 ok: size={} checksum=0x{:08x}",
+                        fw2_holder.len(),
+                        rp1_image::checksum32(&fw2_holder)
+                    );
+                    Some(rp1_image::build_from_fw_parts(
+                        &fw1_holder,
+                        &fw2_holder,
+                        fw_scratch,
+                    )?)
+                }
+                (None, _) => {
+                    logln!("[RP1IMG] fw part0 not found");
+                    None
+                }
+                (_, None) => {
+                    logln!("[RP1IMG] fw part1 not found");
+                    None
+                }
             }
         }
     };
@@ -309,28 +315,21 @@ fn main_flow() -> Result<(), BootError> {
             Ok(Some(chip_id)) => {
                 logln!("[RP1BOOT] chip id = 0x{:08x}", chip_id);
                 if let Err(err) = bootstrap.load_and_start(&rp1_image) {
-                    logln!(
-                        "[RP1BOOT] load/start failed: {:?}; continuing to Linux path",
-                        err
-                    );
+                    handle_rp1_bootstrap_failure(err)?;
                 }
             }
             Ok(None) => {
                 logln!("[RP1BOOT] chip id unavailable; continuing with write-only bootstrap path");
                 if let Err(err) = bootstrap.load_and_start(&rp1_image) {
-                    logln!(
-                        "[RP1BOOT] load/start failed: {:?}; continuing to Linux path",
-                        err
-                    );
+                    handle_rp1_bootstrap_failure(err)?;
                 }
             }
             Err(err) => {
-                logln!(
-                    "[RP1BOOT] reset/probe failed: {:?}; continuing to Linux path",
-                    err
-                );
+                handle_rp1_bootstrap_failure(err)?;
             }
         }
+    } else if !cfg!(feature = "skip-rp1-reload") {
+        handle_rp1_bootstrap_failure(BootError::SdFileNotFound)?;
     }
 
     boot_files::probe_file(sdhc, "/config.txt", "/config.txt after reset")?;
@@ -361,6 +360,9 @@ fn main_flow() -> Result<(), BootError> {
             linux::LinuxImage {
                 entry: placement::KERNEL_LOAD_BASE,
                 image_size: raw.len(),
+                text_offset: 0,
+                flags: 0,
+                image_base: placement::KERNEL_LOAD_BASE,
             },
         )
     } else {
@@ -427,6 +429,33 @@ fn main_flow() -> Result<(), BootError> {
         cmdline.as_deref(),
     )?;
 
+    let regs = linux::read_el2_debug_regs();
+    logln!(
+        "[LINUX] handoff kernel entry=0x{:x} image_size={} text_offset=0x{:x} flags=0x{:x} image_base=0x{:x}",
+        image.entry,
+        image.image_size,
+        image.text_offset,
+        image.flags,
+        image.image_base
+    );
+    logln!(
+        "[LINUX] handoff dtb=0x{:x} len={} initrd=0x{:x}..0x{:x}",
+        patched_dtb.addr,
+        patched_dtb.len,
+        initrd_start,
+        initrd_end
+    );
+    logln!(
+        "[LINUX] EL2 regs before handoff DAIF=0x{:x} CurrentEL=0x{:x} SCTLR_EL2=0x{:x} HCR_EL2=0x{:x} VTTBR_EL2=0x{:x} CNTVOFF_EL2=0x{:x} CPTR_EL2=0x{:x}",
+        regs.daif,
+        regs.current_el,
+        regs.sctlr_el2,
+        regs.hcr_el2,
+        regs.vttbr_el2,
+        regs.cntvoff_el2,
+        regs.cptr_el2
+    );
+
     linux::clean_dcache_poc(kernel_base, image.image_size);
     linux::clean_dcache_poc(initrd_start, initramfs_len);
     linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
@@ -434,6 +463,19 @@ fn main_flow() -> Result<(), BootError> {
 
     // SAFETY: terminal EL2 direct handoff; all boot protocol registers are set in asm.
     unsafe { linux::jump_to_linux_el2(image.entry, patched_dtb.addr) }
+}
+
+fn handle_rp1_bootstrap_failure(err: BootError) -> Result<(), BootError> {
+    logln!(
+        "[RP1BOOT] bootstrap failed: {:?}; refusing Linux handoff unless continue-on-rp1-bootstrap-failure is enabled",
+        err
+    );
+    if cfg!(feature = "continue-on-rp1-bootstrap-failure") {
+        logln!("[RP1BOOT] continuing by feature continue-on-rp1-bootstrap-failure");
+        Ok(())
+    } else {
+        Err(err)
+    }
 }
 
 pub fn fatal(err: BootError) -> ! {

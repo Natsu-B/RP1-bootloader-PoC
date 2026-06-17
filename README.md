@@ -25,9 +25,11 @@ Immediately before the branch, the handoff clears the stage-2 root with
 with the minimal `RW` value for AArch64 execution, clears `SCTLR_EL2.M/C/I`, and
 branches to Image start with no EL1 wrapper.
 
-The Image entry address is the start of the decompressed/copied Image at
-`0x03000000`. `text_offset` is treated as placement metadata, not as an entry
-offset.
+The Image is decompressed/copied to `KERNEL_LOAD_BASE = 0x06000000`. Before
+handoff, the loader validates the arm64 Image header (`text_offset`,
+`image_size`, `flags`, and `ARMd` magic) and verifies that the load address is
+`text_offset` bytes from a 2 MiB-aligned Image base. Invalid placement is fatal;
+the PoC will not branch to Linux from a known-bad address.
 
 The final handoff function is placed in `.text.boot.handoff`, but the current
 implementation still assumes the executable mapping remains identity-compatible
@@ -53,7 +55,7 @@ Expected properties:
 
 - `_start == 0x80000`
 - `_PROGRAM_START == 0x80000`
-- `_LINUX_IMAGE == 0x3000000`
+- `_LINUX_IMAGE == 0x6000000`
 - `./bin/rp1_chainboot_poc.img` does not start with ELF magic `7f 45 4c 46`
 
 On the current build, `readelf` reports `_start` at `0x80000` and `xxd` shows
@@ -62,7 +64,7 @@ than an ELF header.
 
 The stack remains intentionally small at 1 MiB plus one 4 KiB guard page. This
 differs from some `rpi_boot` layouts that reserve a much larger stack, but keeps
-`_STACK_TOP < 0x3000000` with room for the Linux Image placement.
+`_STACK_TOP < 0x6000000` with room for the Linux Image placement.
 
 ## SDHC Lifetime
 
@@ -157,6 +159,11 @@ Build features:
 - `allow-fw-parts-fallback` is enabled by default.
 - `require-rp1-img` makes absence of `/RP1.img` fatal and disables fw-parts
   fallback at runtime.
+- `skip-rp1-reload` skips RP1 reset/I2C firmware reload entirely. Use it to
+  isolate Linux handoff problems from RP1 reload or PCIe state problems.
+- `continue-on-rp1-bootstrap-failure` keeps the old bringup behavior of
+  continuing toward Linux after RP1 bootstrap failure. It is intentionally not
+  enabled by default.
 
 ## RP1 Reset and Probe
 
@@ -164,6 +171,17 @@ After RP1_RUN reset, the loader writes `0x00800000` to `0x40017004` through the
 same I2C bootstrap write protocol before reading the chip id. This mirrors the
 observed bootstrap requirement that a reset clear must occur before chip-id
 access.
+
+By default, RP1 bootstrap failure is fatal and Linux handoff is refused. The log
+spells this out as:
+
+```text
+[RP1BOOT] bootstrap failed: ...; refusing Linux handoff unless continue-on-rp1-bootstrap-failure is enabled
+```
+
+For controlled PoC experiments only, build with
+`--features continue-on-rp1-bootstrap-failure` to keep going after such a
+failure.
 
 ## Logging Backend
 
@@ -227,9 +245,16 @@ crate build script emits a warning pointing users at `cargo xbuild` and
 `kernel_2712.img` is treated as gzip when it starts with `1f 8b`. The PoC parses
 the gzip header itself, inflates the deflate payload with `miniz_oxide` in
 `no_std + alloc` mode, verifies `ISIZE`, and copies the result to
-`0x03000000`.
+`0x06000000`.
 
 Non-gzip input is copied directly as an arm64 Image.
+
+After decompression/copy, the arm64 Image header is validated before handoff.
+The loader reads `text_offset`, `image_size`, `flags`, and the `ARMd` magic. The
+computed Image base (`load_address - text_offset`) must be 2 MiB-aligned. If the
+header declares an `image_size` larger than the decompressed file but still
+within the reserved kernel range, the gap is zero-filled; otherwise validation
+fails with `BootError::LinuxImageInvalid`.
 
 ## I2C
 
@@ -259,6 +284,8 @@ chip-id probe once and returns the result to the caller.
 
 - RP1 PCIe re-enumeration after firmware reload is not fully implemented in this
   PoC.
+- `skip-rp1-reload` is available for Linux handoff isolation, but it does not
+  validate the post-firmware RP1 state.
 - DTB discovery for AON GPIO/I2C/SDHCI quiesce currently has documented fallback
   MMIO addresses; this should be tightened during hardware bringup.
 - The gzip path currently inflates through an allocated `Vec` before copying to
@@ -301,10 +328,15 @@ The following order is the same for UART and semihosting backends:
 [SD] /config.txt after reset ok: size=...
 [SD] /kernel_2712.img ok: size=...
 [KERNEL] gzip detected / not gzip
-[KERNEL] Image header ok, entry=...
+[KERNEL] Image header ok, entry=..., image_size=..., text_offset=..., flags=..., image_base=...
 [SD] /initramfs_2712 ok: size=...
 [SDHC] quiesce begin
 [SDHC] quiesce done
-[DTB] initrd-start=..., initrd-end=...
+[DTB] /chosen bootargs set: len=...
+[DTB] patched output addr=..., size=..., aligned8=true, max=...
+[DTB] /chosen linux,initrd-start=..., linux,initrd-end=...
+[LINUX] handoff kernel entry=..., image_size=..., text_offset=..., flags=..., image_base=...
+[LINUX] handoff dtb=..., len=..., initrd=...
+[LINUX] EL2 regs before handoff DAIF=..., CurrentEL=..., SCTLR_EL2=..., HCR_EL2=..., VTTBR_EL2=..., CNTVOFF_EL2=..., CPTR_EL2=...
 [LINUX] jumping at EL2
 ```
