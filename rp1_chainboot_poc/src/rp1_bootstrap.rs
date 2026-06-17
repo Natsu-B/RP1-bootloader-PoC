@@ -41,9 +41,26 @@ where
         crate::timer::delay_micros(500_000);
         crate::logln!("[RP1BOOT] reset high");
         self.run.set_high()?;
-        crate::timer::delay_micros(10_000);
+        crate::timer::delay_micros(100_000);
 
-        self.write32(RP1_RESETS_CLR, RP1_RESETS_ALL_CLR_MASK_FOR_CHIP_ID)?;
+        let mut last = BootError::I2cWrite;
+        let mut reset_clear_ok = false;
+        for _ in 0..100 {
+            match self.write32(RP1_RESETS_CLR, RP1_RESETS_ALL_CLR_MASK_FOR_CHIP_ID) {
+                Ok(()) => {
+                    reset_clear_ok = true;
+                    break;
+                }
+                Err(err) => {
+                    last = err;
+                    crate::timer::delay_micros(1_000);
+                }
+            }
+        }
+        if !reset_clear_ok {
+            crate::logln!("[RP1BOOT] reset clear write failed: {:?}", last);
+            return Err(last);
+        }
         crate::logln!("[RP1BOOT] reset clear for chip-id probe");
         crate::timer::delay_micros(1_000);
 

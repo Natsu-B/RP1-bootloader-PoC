@@ -19,10 +19,12 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let cmd = env::args().nth(1).unwrap_or_else(|| "build".to_owned());
+    let mut args = env::args().skip(1);
+    let cmd = args.next().unwrap_or_else(|| "build".to_owned());
+    let cargo_args = normalize_cargo_args(args);
     match cmd.as_str() {
-        "build" => build(false),
-        "run" => build(true),
+        "build" => build(false, &cargo_args),
+        "run" => build(true, &cargo_args),
         "-h" | "--help" | "help" => {
             print_help();
             Ok(())
@@ -36,9 +38,27 @@ fn print_help() {
     println!("  cargo run         # build ELF and raw image");
     println!("  cargo xbuild      # same as build");
     println!("  cargo xrun        # build and print deploy placeholder");
+    println!("  cargo xrun --feature log-semihosting");
 }
 
-fn build(run_placeholder: bool) -> Result<(), String> {
+fn normalize_cargo_args<I>(args: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    args.into_iter()
+        .map(|arg| {
+            if arg == "--feature" {
+                "--features".to_owned()
+            } else if let Some(features) = arg.strip_prefix("--feature=") {
+                format!("--features={features}")
+            } else {
+                arg
+            }
+        })
+        .collect()
+}
+
+fn build(run_placeholder: bool, cargo_args: &[String]) -> Result<(), String> {
     let manifest_dir = workspace_root()?;
     let mut cargo = Command::new("cargo");
     cargo
@@ -52,7 +72,8 @@ fn build(run_placeholder: bool) -> Result<(), String> {
         .arg(PACKAGE)
         .arg("--target")
         .arg(TARGET)
-        .arg("--release");
+        .arg("--release")
+        .args(cargo_args);
 
     run_status(&mut cargo, "cargo build")?;
 

@@ -18,7 +18,11 @@ pub struct LinuxImage {
     pub image_size: usize,
 }
 
-pub fn validate_arm64_image(base: usize, loaded_len: usize) -> Result<LinuxImage, BootError> {
+pub fn validate_arm64_image(
+    base: usize,
+    loaded_len: usize,
+    max_len: usize,
+) -> Result<LinuxImage, BootError> {
     if loaded_len < 64 {
         return Err(BootError::LinuxImageInvalid);
     }
@@ -33,10 +37,25 @@ pub fn validate_arm64_image(base: usize, loaded_len: usize) -> Result<LinuxImage
     } else {
         image_size
     };
-    if image_size > loaded_len {
+    if image_size > max_len {
         return Err(BootError::LinuxImageInvalid);
     }
-    crate::logln!("[KERNEL] Image header ok, entry=0x{:x}", base);
+    if image_size > loaded_len {
+        let zero_len = image_size - loaded_len;
+        // SAFETY: caller reserved `max_len` bytes at `base`, and image_size <= max_len.
+        unsafe {
+            core::ptr::write_bytes((base + loaded_len) as *mut u8, 0, zero_len);
+        }
+        crate::logln!(
+            "[KERNEL] Image header size extends loaded file; zero-filled {} bytes",
+            zero_len
+        );
+    }
+    crate::logln!(
+        "[KERNEL] Image header ok, entry=0x{:x} image_size={}",
+        base,
+        image_size
+    );
     Ok(LinuxImage {
         entry: base,
         image_size,

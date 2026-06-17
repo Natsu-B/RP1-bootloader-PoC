@@ -13,14 +13,29 @@ pub fn read_file(
     path: &str,
 ) -> Result<AlignedSliceBox<u8>, BootError> {
     let storage = StorageDevice::from_ready_block_device(dev).map_err(|_| BootError::SdMount)?;
-    let handle = storage
-        .open(0, path, &OpenOptions::Read)
-        .map_err(map_open_error)?;
-    let expected_size = handle.size().map_err(|_| BootError::SdRead)?;
+    let handle = match storage.open(0, path, &OpenOptions::Read) {
+        Ok(handle) => handle,
+        Err(err) => {
+            let mapped = map_open_error(err);
+            crate::logln!("[SD] {} open error raw={:?} mapped={:?}", path, err, mapped);
+            return Err(mapped);
+        }
+    };
+    let expected_size = match handle.size() {
+        Ok(size) => size,
+        Err(_) => {
+            crate::logln!("[SD] {} size error", path);
+            return Err(BootError::SdRead);
+        }
+    };
     // FileHandle::read takes an alignment, not a byte count.
-    let bytes = handle
-        .read(FILE_READ_ALIGN)
-        .map_err(|_| BootError::SdRead)?;
+    let bytes = match handle.read(FILE_READ_ALIGN) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            crate::logln!("[SD] {} read error", path);
+            return Err(BootError::SdRead);
+        }
+    };
     if bytes.len() as u64 != expected_size {
         crate::logln!(
             "[SD] {} size mismatch: stat={} read={}",
