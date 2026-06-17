@@ -150,6 +150,10 @@ fn main_flow() -> Result<(), BootError> {
     logging::init();
     logln!("[BOOT] start EL2");
     timer::init();
+    logln!(
+        "[TIMER] generic timer freq={} Hz",
+        timer::counter_frequency_hz()
+    );
     logln!("[TLS] init skipped: static BSP TLS symbols preserved by linker");
     logln!("[EXC] vector init skipped for PoC bringup");
 
@@ -577,16 +581,62 @@ fn alloc_error(layout: Layout) -> ! {
 }
 
 pub mod timer {
-    pub fn init() {}
+    use core::cell::UnsafeCell;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::time::Duration;
+
+    use arch_timer::SystemTimer;
+
+    struct TimerCell(UnsafeCell<SystemTimer>);
+
+    // SAFETY: This bootloader runs timer initialization/use on the boot CPU during
+    // early single-threaded bringup. No concurrent mutable access is expected.
+    unsafe impl Sync for TimerCell {}
+
+    static TIMER: TimerCell = TimerCell(UnsafeCell::new(SystemTimer::new()));
+    static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+    pub fn init() {
+        if INITIALIZED.load(Ordering::Acquire) {
+            return;
+        }
+
+        // SAFETY: Early boot single-core initialization. See TimerCell Sync comment.
+        unsafe {
+            (*TIMER.0.get()).init();
+        }
+
+        INITIALIZED.store(true, Ordering::Release);
+    }
 
     pub fn delay_micros(us: u64) {
-        let mut count = us.saturating_mul(200);
-        while count != 0 {
-            // SAFETY: single-cycle hint used only for bounded delay loops.
-            unsafe {
-                core::arch::asm!("nop", options(nomem, nostack, preserves_flags));
-            }
-            count -= 1;
+        ensure_init();
+
+        // SAFETY: Early boot single-core use. No concurrent mutable access occurs.
+        unsafe {
+            (*TIMER.0.get()).wait(Duration::from_micros(us));
+        }
+    }
+
+    pub fn delay_millis(ms: u64) {
+        ensure_init();
+
+        // SAFETY: Early boot single-core use. No concurrent mutable access occurs.
+        unsafe {
+            (*TIMER.0.get()).wait(Duration::from_millis(ms));
+        }
+    }
+
+    pub fn counter_frequency_hz() -> u64 {
+        ensure_init();
+
+        // SAFETY: Read-only access after initialization.
+        unsafe { (*TIMER.0.get()).counter_frequency_hz().get() }
+    }
+
+    fn ensure_init() {
+        if !INITIALIZED.load(Ordering::Acquire) {
+            init();
         }
     }
 }

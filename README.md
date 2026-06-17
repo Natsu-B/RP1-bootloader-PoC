@@ -85,6 +85,23 @@ CMD/DATA software reset using a minimal MMIO quiesce path.
 This PoC currently uses a static 8 MiB bump allocator. It does not yet build a
 full allocator from DTB memory and reserved-memory nodes.
 
+## Timer
+
+Delay handling uses the `timer` crate from `aarch64_type1_hypervisor`, imported
+as `arch_timer`. The PoC initializes `SystemTimer`, reads `CNTFRQ_EL0`, and uses
+`CNTPCT_EL0` polling through `SystemTimer::wait(Duration)`.
+
+This replaces the old NOP-loop delay, which was not stable under OpenOCD/SWD or
+semihosting.
+
+Current RP1 reset timing:
+
+- `RP1_RESET_LOW_US = 50_000`
+- `RP1_RESET_HIGH_SETTLE_US = 10_000`
+
+If RP1 does not reliably enter I2C bootstrap mode, increase
+`RP1_RESET_LOW_US` first.
+
 ## DTB Placement
 
 The firmware-provided DTB is parsed at `0x20000000`. The patched Linux DTB is
@@ -307,6 +324,7 @@ The following order is the same for UART and semihosting backends:
 
 ```text
 [BOOT] start EL2
+[TIMER] generic timer freq=... Hz
 [DTB] parse ok
 [ALLOC] static bump allocator ok: size=...
 [RP1] init_rp1 ok
@@ -316,9 +334,12 @@ The following order is the same for UART and semihosting backends:
 [SD] /RP1.img found / not found
 [RP1IMG] source=RP1.img / fw-parts
 [RP1BOOT] reset low
+[RP1BOOT] reset low delay 50000 us
 [RP1BOOT] reset high
+[RP1BOOT] reset high settle 10000 us
+[RP1BOOT] reset clear ok after ... retries
 [RP1BOOT] reset clear for chip-id probe
-[RP1BOOT] i2c 0x43 ack ok
+[RP1BOOT] i2c 0x43 ack ok after ... retries
 [RP1BOOT] chip id = ...
 # If chip-id probing is made optional for bringup, this may instead be:
 # [RP1BOOT] chip id unavailable; continuing with write-only bootstrap path
