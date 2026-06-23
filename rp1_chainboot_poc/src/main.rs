@@ -19,6 +19,8 @@ mod boot_files;
 mod dtb_patch;
 mod gzip;
 mod linux;
+#[cfg(feature = "tftp-boot")]
+mod net_boot;
 mod panic;
 mod placement;
 mod rp1_bootstrap;
@@ -136,6 +138,9 @@ pub enum BootError {
     SdhcQuiesceFailure,
     El2HandoffPreparationFailure,
     AddressOverflow,
+    Rp1Pcie,
+    Rp1Gem,
+    Tftp,
 }
 
 #[unsafe(no_mangle)]
@@ -187,286 +192,296 @@ fn main_flow() -> Result<(), BootError> {
         ),
     ])?;
 
-    match bcm2712::init_rp1(&dtb) {
-        Ok(_rp1_cfg) => {
-            logln!("[RP1] init_rp1 ok");
-            logln!("[RP1] existing RP1 visible");
-        }
-        Err(err) => {
-            logln!("[RP1] init_rp1 failed: {:?}", err);
-            logln!("[RP1] continuing to SDHC/RP1 bootstrap PoC path");
-        }
+    #[cfg(feature = "tftp-boot")]
+    {
+        return net_boot::boot_from_tftp(&dtb);
     }
 
-    logln!("[SDHC] init begin");
-    let sdhc: &'static dyn BlockDevice = match bcm2712::sdhc::init_from_dtb(&dtb) {
-        Ok(sdhc) => sdhc,
-        Err(err) => {
-            logln!("[SDHC] init failed: {:?}", err);
-            return Err(BootError::SdMount);
-        }
-    };
-    logln!("[SDHC] init ok");
-
-    boot_files::probe_file(sdhc, "/config.txt", "/config.txt before reset")?;
-
-    let rp1_img_file;
-    let fw1_holder;
-    let fw2_holder;
-    let rp1_image = if cfg!(feature = "skip-rp1-reload") {
-        logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
-        None
-    } else {
-        rp1_img_file = read_first_optional_file(
-            sdhc,
-            &["/RP1.img", "/rp1/RP1.img", "/rp1/rp1.img", "/RP1/RP1.IMG"],
-        )?;
-        if rp1_img_file.is_some() {
-            logln!("[SD] /RP1.img found");
-        } else {
-            logln!("[SD] /RP1.img not found");
-        }
-
-        let fw_scratch = placement::rp1_scratch_slice();
-        if let Some(ref image_bytes) = rp1_img_file {
-            let image = rp1_image::parse_rp1_img(image_bytes)?;
-            logln!(
-                "[SD] /RP1.img ok: payload={} load=0x{:x} entry=0x{:x} stack=0x{:x}",
-                image.payload.len(),
-                image.load_addr,
-                image.entry,
-                image.stack
-            );
-            Some(image)
-        } else {
-            if cfg!(feature = "require-rp1-img") {
-                return Err(BootError::SdFileNotFound);
-            }
-            logln!(
-                "[RP1IMG] fallback fw-parts uses configured entry=0x{:08x} stack=0x{:08x}",
-                rp1_image::RP1_FALLBACK_ENTRY | 1,
-                rp1_image::RP1_FALLBACK_STACK
-            );
-            logln!("[RP1IMG] prefer /RP1.img for exact entry/stack");
-            let fw1_candidate = read_first_optional_file(
-                sdhc,
-                &[
-                    "/rp1c0fw1.bin",
-                    "/rp1/rp1c0fw1.bin",
-                    "/RP1/FW1.BIN",
-                    "/RP1C0FW1.BIN",
-                ],
-            )?;
-            let fw2_candidate = read_first_optional_file(
-                sdhc,
-                &[
-                    "/rp1c0fw2.bin",
-                    "/rp1/rp1c0fw2.bin",
-                    "/RP1/FW2.BIN",
-                    "/RP1C0FW2.BIN",
-                ],
-            )?;
-            match (fw1_candidate, fw2_candidate) {
-                (Some(fw1), Some(fw2)) => {
-                    fw1_holder = fw1;
-                    fw2_holder = fw2;
-                    logln!(
-                        "[SD] rp1 fw part0 ok: size={} checksum=0x{:08x}",
-                        fw1_holder.len(),
-                        rp1_image::checksum32(&fw1_holder)
-                    );
-                    logln!(
-                        "[SD] rp1 fw part1 ok: size={} checksum=0x{:08x}",
-                        fw2_holder.len(),
-                        rp1_image::checksum32(&fw2_holder)
-                    );
-                    Some(rp1_image::build_from_fw_parts(
-                        &fw1_holder,
-                        &fw2_holder,
-                        fw_scratch,
-                    )?)
-                }
-                (None, _) => {
-                    logln!("[RP1IMG] fw part0 not found");
-                    None
-                }
-                (_, None) => {
-                    logln!("[RP1IMG] fw part1 not found");
-                    None
-                }
-            }
-        }
-    };
-
-    if let Some(rp1_image) = rp1_image {
-        let source = match rp1_image.source {
-            rp1_image::Rp1ImageSource::Rp1Img => "RP1.img",
-            rp1_image::Rp1ImageSource::FwParts => "fw-parts",
-        };
-        logln!("[RP1IMG] source={}", source);
-        logln!(
-            "[RP1IMG] payload size={} load=0x{:x} entry=0x{:x} stack=0x{:x}",
-            rp1_image.payload.len(),
-            rp1_image.load_addr,
-            rp1_image.entry,
-            rp1_image.stack
-        );
-
-        let i2c = bcm2712_i2c::Bcm2712I2c::from_dtb_or_fallback(&dtb);
-        let run = bcm2712_aon::Rp1RunPin::from_dtb_or_fallback(&dtb);
-        let mut bootstrap = rp1_bootstrap::Rp1Bootstrap::new(i2c, run);
-        match bootstrap.reset_into_bootrom() {
-            Ok(Some(chip_id)) => {
-                logln!("[RP1BOOT] chip id = 0x{:08x}", chip_id);
-                if let Err(err) = bootstrap.load_and_start(&rp1_image) {
-                    handle_rp1_bootstrap_failure(err)?;
-                }
-            }
-            Ok(None) => {
-                logln!("[RP1BOOT] chip id unavailable; continuing with write-only bootstrap path");
-                if let Err(err) = bootstrap.load_and_start(&rp1_image) {
-                    handle_rp1_bootstrap_failure(err)?;
-                }
+    #[cfg(not(feature = "tftp-boot"))]
+    {
+        match bcm2712::init_rp1(&dtb) {
+            Ok(_rp1_cfg) => {
+                logln!("[RP1] init_rp1 ok");
+                logln!("[RP1] existing RP1 visible");
             }
             Err(err) => {
-                handle_rp1_bootstrap_failure(err)?;
+                logln!("[RP1] init_rp1 failed: {:?}", err);
+                logln!("[RP1] continuing to SDHC/RP1 bootstrap PoC path");
             }
         }
-    } else if !cfg!(feature = "skip-rp1-reload") {
-        handle_rp1_bootstrap_failure(BootError::SdFileNotFound)?;
-    }
 
-    boot_files::probe_file(sdhc, "/config.txt", "/config.txt after reset")?;
+        logln!("[SDHC] init begin");
+        let sdhc: &'static dyn BlockDevice = match bcm2712::sdhc::init_from_dtb(&dtb) {
+            Ok(sdhc) => sdhc,
+            Err(err) => {
+                logln!("[SDHC] init failed: {:?}", err);
+                return Err(BootError::SdMount);
+            }
+        };
+        logln!("[SDHC] init ok");
 
-    logln!("[KERNEL] probing raw BCM2712 image paths");
-    let bcm2712_raw = read_first_optional_file(
-        sdhc,
-        &[
-            "/BCM2712.img",
-            "/BCM2712.IMG",
-            "/bcm2712.img",
-            "/bcm2712.IMG",
-        ],
-    )?;
-    let (kernel_base, image) = if let Some(raw) = bcm2712_raw {
-        placement::copy_to_phys(
-            placement::KERNEL_LOAD_BASE,
-            placement::KERNEL_MAX_SIZE,
-            &raw,
-        )?;
-        logln!(
-            "[KERNEL] /BCM2712.img raw placement base=0x{:x} len={}",
-            placement::KERNEL_LOAD_BASE,
-            raw.len()
-        );
-        (
-            placement::KERNEL_LOAD_BASE,
-            linux::LinuxImage {
-                entry: placement::KERNEL_LOAD_BASE,
-                image_size: raw.len(),
-                text_offset: 0,
-                flags: 0,
-                image_base: placement::KERNEL_LOAD_BASE,
-            },
-        )
-    } else {
-        logln!("[KERNEL] raw BCM2712 image not found; probing /kernel_2712.img");
-        let kernel_file = read_first_optional_file(
+        boot_files::probe_file(sdhc, "/config.txt", "/config.txt before reset")?;
+
+        let rp1_img_file;
+        let fw1_holder;
+        let fw2_holder;
+        let rp1_image = if cfg!(feature = "skip-rp1-reload") {
+            logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
+            None
+        } else {
+            rp1_img_file = read_first_optional_file(
+                sdhc,
+                &["/RP1.img", "/rp1/RP1.img", "/rp1/rp1.img", "/RP1/RP1.IMG"],
+            )?;
+            if rp1_img_file.is_some() {
+                logln!("[SD] /RP1.img found");
+            } else {
+                logln!("[SD] /RP1.img not found");
+            }
+
+            let fw_scratch = placement::rp1_scratch_slice();
+            if let Some(ref image_bytes) = rp1_img_file {
+                let image = rp1_image::parse_rp1_img(image_bytes)?;
+                logln!(
+                    "[SD] /RP1.img ok: payload={} load=0x{:x} entry=0x{:x} stack=0x{:x}",
+                    image.payload.len(),
+                    image.load_addr,
+                    image.entry,
+                    image.stack
+                );
+                Some(image)
+            } else {
+                if cfg!(feature = "require-rp1-img") {
+                    return Err(BootError::SdFileNotFound);
+                }
+                logln!(
+                    "[RP1IMG] fallback fw-parts uses configured entry=0x{:08x} stack=0x{:08x}",
+                    rp1_image::RP1_FALLBACK_ENTRY | 1,
+                    rp1_image::RP1_FALLBACK_STACK
+                );
+                logln!("[RP1IMG] prefer /RP1.img for exact entry/stack");
+                let fw1_candidate = read_first_optional_file(
+                    sdhc,
+                    &[
+                        "/rp1c0fw1.bin",
+                        "/rp1/rp1c0fw1.bin",
+                        "/RP1/FW1.BIN",
+                        "/RP1C0FW1.BIN",
+                    ],
+                )?;
+                let fw2_candidate = read_first_optional_file(
+                    sdhc,
+                    &[
+                        "/rp1c0fw2.bin",
+                        "/rp1/rp1c0fw2.bin",
+                        "/RP1/FW2.BIN",
+                        "/RP1C0FW2.BIN",
+                    ],
+                )?;
+                match (fw1_candidate, fw2_candidate) {
+                    (Some(fw1), Some(fw2)) => {
+                        fw1_holder = fw1;
+                        fw2_holder = fw2;
+                        logln!(
+                            "[SD] rp1 fw part0 ok: size={} checksum=0x{:08x}",
+                            fw1_holder.len(),
+                            rp1_image::checksum32(&fw1_holder)
+                        );
+                        logln!(
+                            "[SD] rp1 fw part1 ok: size={} checksum=0x{:08x}",
+                            fw2_holder.len(),
+                            rp1_image::checksum32(&fw2_holder)
+                        );
+                        Some(rp1_image::build_from_fw_parts(
+                            &fw1_holder,
+                            &fw2_holder,
+                            fw_scratch,
+                        )?)
+                    }
+                    (None, _) => {
+                        logln!("[RP1IMG] fw part0 not found");
+                        None
+                    }
+                    (_, None) => {
+                        logln!("[RP1IMG] fw part1 not found");
+                        None
+                    }
+                }
+            }
+        };
+
+        if let Some(rp1_image) = rp1_image {
+            let source = match rp1_image.source {
+                rp1_image::Rp1ImageSource::Rp1Img => "RP1.img",
+                rp1_image::Rp1ImageSource::FwParts => "fw-parts",
+            };
+            logln!("[RP1IMG] source={}", source);
+            logln!(
+                "[RP1IMG] payload size={} load=0x{:x} entry=0x{:x} stack=0x{:x}",
+                rp1_image.payload.len(),
+                rp1_image.load_addr,
+                rp1_image.entry,
+                rp1_image.stack
+            );
+
+            let i2c = bcm2712_i2c::Bcm2712I2c::from_dtb_or_fallback(&dtb);
+            let run = bcm2712_aon::Rp1RunPin::from_dtb_or_fallback(&dtb);
+            let mut bootstrap = rp1_bootstrap::Rp1Bootstrap::new(i2c, run);
+            match bootstrap.reset_into_bootrom() {
+                Ok(Some(chip_id)) => {
+                    logln!("[RP1BOOT] chip id = 0x{:08x}", chip_id);
+                    if let Err(err) = bootstrap.load_and_start(&rp1_image) {
+                        handle_rp1_bootstrap_failure(err)?;
+                    }
+                }
+                Ok(None) => {
+                    logln!(
+                        "[RP1BOOT] chip id unavailable; continuing with write-only bootstrap path"
+                    );
+                    if let Err(err) = bootstrap.load_and_start(&rp1_image) {
+                        handle_rp1_bootstrap_failure(err)?;
+                    }
+                }
+                Err(err) => {
+                    handle_rp1_bootstrap_failure(err)?;
+                }
+            }
+        } else if !cfg!(feature = "skip-rp1-reload") {
+            handle_rp1_bootstrap_failure(BootError::SdFileNotFound)?;
+        }
+
+        boot_files::probe_file(sdhc, "/config.txt", "/config.txt after reset")?;
+
+        logln!("[KERNEL] probing raw BCM2712 image paths");
+        let bcm2712_raw = read_first_optional_file(
             sdhc,
             &[
-                "/kernel_2712.img",
-                "/KERNEL_2712.IMG",
-                "/KERNEL~1.IMG",
-                "/kernel8.img",
-                "/KERNEL8.IMG",
+                "/BCM2712.img",
+                "/BCM2712.IMG",
+                "/bcm2712.img",
+                "/bcm2712.IMG",
+            ],
+        )?;
+        let (kernel_base, image) = if let Some(raw) = bcm2712_raw {
+            placement::copy_to_phys(
+                placement::KERNEL_LOAD_BASE,
+                placement::KERNEL_MAX_SIZE,
+                &raw,
+            )?;
+            logln!(
+                "[KERNEL] /BCM2712.img raw placement base=0x{:x} len={}",
+                placement::KERNEL_LOAD_BASE,
+                raw.len()
+            );
+            (
+                placement::KERNEL_LOAD_BASE,
+                linux::LinuxImage {
+                    entry: placement::KERNEL_LOAD_BASE,
+                    image_size: raw.len(),
+                    text_offset: 0,
+                    flags: 0,
+                    image_base: placement::KERNEL_LOAD_BASE,
+                },
+            )
+        } else {
+            logln!("[KERNEL] raw BCM2712 image not found; probing /kernel_2712.img");
+            let kernel_file = read_first_optional_file(
+                sdhc,
+                &[
+                    "/kernel_2712.img",
+                    "/KERNEL_2712.IMG",
+                    "/KERNEL~1.IMG",
+                    "/kernel8.img",
+                    "/KERNEL8.IMG",
+                ],
+            )?
+            .ok_or(BootError::SdFileNotFound)?;
+            logln!("[SD] kernel image selected: size={}", kernel_file.len());
+            let kernel = gzip::decompress_kernel_if_needed(
+                &kernel_file,
+                placement::KERNEL_LOAD_BASE,
+                placement::KERNEL_MAX_SIZE,
+            )?;
+            logln!(
+                "[KERNEL] placement base=0x{:x} len={} gzip={}",
+                kernel.base,
+                kernel.len,
+                kernel.was_gzip
+            );
+            let image =
+                linux::validate_arm64_image(kernel.base, kernel.len, placement::KERNEL_MAX_SIZE)?;
+            (kernel.base, image)
+        };
+
+        let initramfs = read_first_optional_file(
+            sdhc,
+            &[
+                "/initramfs_2712",
+                "/INITRAMFS_2712",
+                "/INITRA~2",
+                "/INITRA~1",
+                "/INITRD",
+                "/INITRD.IMG",
             ],
         )?
         .ok_or(BootError::SdFileNotFound)?;
-        logln!("[SD] kernel image selected: size={}", kernel_file.len());
-        let kernel = gzip::decompress_kernel_if_needed(
-            &kernel_file,
-            placement::KERNEL_LOAD_BASE,
-            placement::KERNEL_MAX_SIZE,
+        placement::copy_to_phys(
+            placement::INITRAMFS_LOAD_BASE,
+            placement::INITRAMFS_MAX_SIZE,
+            &initramfs,
         )?;
+        let initramfs_len = initramfs.len();
+        drop(initramfs);
+        let initrd_start = placement::INITRAMFS_LOAD_BASE;
+        let initrd_end = initrd_start + initramfs_len;
+
+        let cmdline = boot_files::read_optional_file(sdhc, "/cmdline.txt")?;
+        linux::quiesce_sdhc_from_dtb_or_fallback(&dtb)?;
+
+        let patched_dtb = dtb_patch::patch_dtb_for_linux(
+            &dtb,
+            placement::DTB_COPY_BASE,
+            placement::DTB_MAX_SIZE,
+            initrd_start,
+            initrd_end,
+            cmdline.as_deref(),
+        )?;
+
+        let regs = linux::read_el2_debug_regs();
         logln!(
-            "[KERNEL] placement base=0x{:x} len={} gzip={}",
-            kernel.base,
-            kernel.len,
-            kernel.was_gzip
+            "[LINUX] handoff kernel entry=0x{:x} image_size={} text_offset=0x{:x} flags=0x{:x} image_base=0x{:x}",
+            image.entry,
+            image.image_size,
+            image.text_offset,
+            image.flags,
+            image.image_base
         );
-        let image =
-            linux::validate_arm64_image(kernel.base, kernel.len, placement::KERNEL_MAX_SIZE)?;
-        (kernel.base, image)
-    };
+        logln!(
+            "[LINUX] handoff dtb=0x{:x} len={} initrd=0x{:x}..0x{:x}",
+            patched_dtb.addr,
+            patched_dtb.len,
+            initrd_start,
+            initrd_end
+        );
+        logln!(
+            "[LINUX] EL2 regs before handoff DAIF=0x{:x} CurrentEL=0x{:x} SCTLR_EL2=0x{:x} HCR_EL2=0x{:x} VTTBR_EL2=0x{:x} CNTVOFF_EL2=0x{:x} CPTR_EL2=0x{:x}",
+            regs.daif,
+            regs.current_el,
+            regs.sctlr_el2,
+            regs.hcr_el2,
+            regs.vttbr_el2,
+            regs.cntvoff_el2,
+            regs.cptr_el2
+        );
 
-    let initramfs = read_first_optional_file(
-        sdhc,
-        &[
-            "/initramfs_2712",
-            "/INITRAMFS_2712",
-            "/INITRA~2",
-            "/INITRA~1",
-            "/INITRD",
-            "/INITRD.IMG",
-        ],
-    )?
-    .ok_or(BootError::SdFileNotFound)?;
-    placement::copy_to_phys(
-        placement::INITRAMFS_LOAD_BASE,
-        placement::INITRAMFS_MAX_SIZE,
-        &initramfs,
-    )?;
-    let initramfs_len = initramfs.len();
-    drop(initramfs);
-    let initrd_start = placement::INITRAMFS_LOAD_BASE;
-    let initrd_end = initrd_start + initramfs_len;
+        linux::clean_dcache_poc(kernel_base, image.image_size);
+        linux::clean_dcache_poc(initrd_start, initramfs_len);
+        linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
+        linux::invalidate_icache_all();
 
-    let cmdline = boot_files::read_optional_file(sdhc, "/cmdline.txt")?;
-    linux::quiesce_sdhc_from_dtb_or_fallback(&dtb)?;
-
-    let patched_dtb = dtb_patch::patch_dtb_for_linux(
-        &dtb,
-        placement::DTB_COPY_BASE,
-        placement::DTB_MAX_SIZE,
-        initrd_start,
-        initrd_end,
-        cmdline.as_deref(),
-    )?;
-
-    let regs = linux::read_el2_debug_regs();
-    logln!(
-        "[LINUX] handoff kernel entry=0x{:x} image_size={} text_offset=0x{:x} flags=0x{:x} image_base=0x{:x}",
-        image.entry,
-        image.image_size,
-        image.text_offset,
-        image.flags,
-        image.image_base
-    );
-    logln!(
-        "[LINUX] handoff dtb=0x{:x} len={} initrd=0x{:x}..0x{:x}",
-        patched_dtb.addr,
-        patched_dtb.len,
-        initrd_start,
-        initrd_end
-    );
-    logln!(
-        "[LINUX] EL2 regs before handoff DAIF=0x{:x} CurrentEL=0x{:x} SCTLR_EL2=0x{:x} HCR_EL2=0x{:x} VTTBR_EL2=0x{:x} CNTVOFF_EL2=0x{:x} CPTR_EL2=0x{:x}",
-        regs.daif,
-        regs.current_el,
-        regs.sctlr_el2,
-        regs.hcr_el2,
-        regs.vttbr_el2,
-        regs.cntvoff_el2,
-        regs.cptr_el2
-    );
-
-    linux::clean_dcache_poc(kernel_base, image.image_size);
-    linux::clean_dcache_poc(initrd_start, initramfs_len);
-    linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
-    linux::invalidate_icache_all();
-
-    // SAFETY: terminal EL2 direct handoff; all boot protocol registers are set in asm.
-    unsafe { linux::jump_to_linux_el2(image.entry, patched_dtb.addr) }
+        // SAFETY: terminal EL2 direct handoff; all boot protocol registers are set in asm.
+        unsafe { linux::jump_to_linux_el2(image.entry, patched_dtb.addr) }
+    }
 }
 
 fn handle_rp1_bootstrap_failure(err: BootError) -> Result<(), BootError> {

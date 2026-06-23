@@ -257,6 +257,44 @@ generation, so raw image creation is intentionally handled by `xtask`. The
 crate build script emits a warning pointing users at `cargo xbuild` and
 `cargo xrun`.
 
+## TFTP boot
+
+The `tftp-boot` feature is an alternate boot source. It leaves the SDHC path
+unchanged when disabled, but when enabled it initializes RP1 PCIe in `Auto`
+mode, initializes `Rp1Gem`, resolves the configured server with ARP, downloads
+`BCM2712.img` through the reusable `net::tftp::download_into` client, stages
+and decompresses it when necessary, validates the arm64 Image, patches the
+DTB, quiesces GEM, cleans the handoff ranges, and enters the existing EL2
+handoff path. It never continues after a failed or partial kernel download.
+
+Network constants are intentionally kept at the top of
+`rp1_chainboot_poc/src/net_boot.rs`. The current lab defaults are local
+`192.168.3.2`, server `192.168.3.1`, and filename `BCM2712.img`. Update these
+values together for a different direct Ethernet network. The optional
+`tftp-initramfs` feature additionally downloads `initramfs_2712` into the
+existing initramfs placement range.
+
+Build with the repository's nightly toolchain:
+
+```sh
+cargo +nightly xbuild --features tftp-boot
+```
+
+For a direct host link, use a TFTP root that contains the configured filenames,
+then bind the server to the host Ethernet interface. `dnsmasq` can run without
+a DNS service as follows:
+
+```sh
+sudo ip addr replace 192.168.3.1/24 dev <cm5-ethernet-iface>
+sudo ip link set <cm5-ethernet-iface> up
+sudo dnsmasq --keep-in-foreground --port=0 --interface=<cm5-ethernet-iface> \
+  --bind-interfaces --enable-tftp --tftp-root=/tmp/rp1-tftp --log-queries
+```
+
+Capture `arp or udp` on the host interface during a hardware run. A valid TFTP
+server chooses its own UDP transfer port after the RRQ; the client binds that
+port after the first DATA packet and rejects later DATA from another port.
+
 ## Gzip
 
 `kernel_2712.img` is treated as gzip when it starts with `1f 8b`. The PoC parses
