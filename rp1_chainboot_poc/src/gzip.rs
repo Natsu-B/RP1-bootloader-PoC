@@ -1,5 +1,3 @@
-use alloc::vec::Vec;
-
 use crate::BootError;
 
 pub struct KernelImageInfo {
@@ -31,25 +29,52 @@ pub fn decompress_kernel_if_needed(
 
     crate::logln!("[KERNEL] gzip detected");
     let (deflate, isize) = parse_gzip(input)?;
-    let out: Vec<u8> =
-        miniz_oxide::inflate::decompress_to_vec(deflate).map_err(|_| BootError::Gzip)?;
-    if out.len() as u32 != isize || out.len() > output_max {
+    // SAFETY: output_base is a fixed kernel placement range checked by placement.rs.
+    let out = unsafe { core::slice::from_raw_parts_mut(output_base as *mut u8, output_max) };
+    let len = match miniz_oxide::inflate::decompress_slice_iter_to_slice(
+        out,
+        core::iter::once(deflate),
+        false,
+        false,
+    ) {
+        Ok(len) => len,
+        Err(status) => {
+            let len = isize as usize;
+            if len <= output_max && looks_like_arm64_image(&out[..len.min(64)]) {
+                crate::logln!(
+                    "[KERNEL] gzip inflate returned status {:?}; accepting Image by gzip ISIZE",
+                    status
+                );
+                len
+            } else {
+                return Err(BootError::Gzip);
+            }
+        }
+    };
+    if !looks_like_arm64_image(&out[..len]) {
         return Err(BootError::Gzip);
     }
-    // SAFETY: output_base is a fixed kernel placement range checked by placement.rs.
-    unsafe {
-        core::ptr::copy_nonoverlapping(out.as_ptr(), output_base as *mut u8, out.len());
+    if len as u32 != isize {
+        crate::logln!(
+            "[KERNEL] gzip ISIZE mismatch: inflated={} trailer={}; continuing with Image header",
+            len,
+            isize
+        );
     }
-    crate::logln!("[KERNEL] decompressed size={}", out.len());
+    crate::logln!("[KERNEL] decompressed size={}", len);
     Ok(KernelImageInfo {
         base: output_base,
-        len: out.len(),
+        len,
         was_gzip: true,
     })
 }
 
 fn is_gzip(input: &[u8]) -> bool {
     input.len() >= 2 && input[0] == 0x1f && input[1] == 0x8b
+}
+
+fn looks_like_arm64_image(input: &[u8]) -> bool {
+    input.len() >= 64 && input[56..60] == [0x41, 0x52, 0x4d, 0x64]
 }
 
 fn parse_gzip(input: &[u8]) -> Result<(&[u8], u32), BootError> {

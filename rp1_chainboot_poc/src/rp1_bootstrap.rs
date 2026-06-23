@@ -14,6 +14,10 @@ pub const RP1_CHIP_ID: u32 = 0x4000_0000;
 pub const RP1_RESETS_CLR: u32 = 0x4001_7004;
 pub const RP1_RESETS_ALL_CLR_MASK_FOR_CHIP_ID: u32 = 0x0080_0000;
 pub const RP1_PROBE_CHIP_ID_REQUIRED: bool = true;
+pub const RP1_RESET_LOW_US: u64 = 50_000;
+pub const RP1_RESET_HIGH_SETTLE_US: u64 = 10_000;
+pub const RP1_RESET_CLEAR_RETRY_DELAY_US: u64 = 1_000;
+pub const RP1_CHIP_ID_RETRY_DELAY_US: u64 = 1_000;
 
 pub trait Rp1I2cBus {
     type Error;
@@ -38,25 +42,49 @@ where
     pub fn reset_into_bootrom(&mut self) -> Result<Option<u32>, BootError> {
         crate::logln!("[RP1BOOT] reset low");
         self.run.set_low()?;
-        crate::timer::delay_micros(500_000);
+        crate::logln!("[RP1BOOT] reset low delay {} us", RP1_RESET_LOW_US);
+        crate::timer::delay_micros(RP1_RESET_LOW_US);
+
         crate::logln!("[RP1BOOT] reset high");
         self.run.set_high()?;
-        crate::timer::delay_micros(10_000);
+        crate::logln!(
+            "[RP1BOOT] reset high settle {} us",
+            RP1_RESET_HIGH_SETTLE_US
+        );
+        crate::timer::delay_micros(RP1_RESET_HIGH_SETTLE_US);
 
-        self.write32(RP1_RESETS_CLR, RP1_RESETS_ALL_CLR_MASK_FOR_CHIP_ID)?;
+        let mut last = BootError::I2cWrite;
+        let mut reset_clear_ok = false;
+        for attempt in 0..100 {
+            match self.write32(RP1_RESETS_CLR, RP1_RESETS_ALL_CLR_MASK_FOR_CHIP_ID) {
+                Ok(()) => {
+                    reset_clear_ok = true;
+                    crate::logln!("[RP1BOOT] reset clear ok after {} retries", attempt);
+                    break;
+                }
+                Err(err) => {
+                    last = err;
+                    crate::timer::delay_micros(RP1_RESET_CLEAR_RETRY_DELAY_US);
+                }
+            }
+        }
+        if !reset_clear_ok {
+            crate::logln!("[RP1BOOT] reset clear write failed: {:?}", last);
+            return Err(last);
+        }
         crate::logln!("[RP1BOOT] reset clear for chip-id probe");
-        crate::timer::delay_micros(1_000);
+        crate::timer::delay_micros(RP1_RESET_CLEAR_RETRY_DELAY_US);
 
         let mut last = BootError::I2cNack;
-        for _ in 0..50 {
+        for attempt in 0..50 {
             match self.probe_chip_id() {
                 Ok(chip_id) => {
-                    crate::logln!("[RP1BOOT] i2c 0x43 ack ok");
+                    crate::logln!("[RP1BOOT] i2c 0x43 ack ok after {} retries", attempt);
                     return Ok(Some(chip_id));
                 }
                 Err(err) => {
                     last = err;
-                    crate::timer::delay_micros(1_000);
+                    crate::timer::delay_micros(RP1_CHIP_ID_RETRY_DELAY_US);
                 }
             }
         }

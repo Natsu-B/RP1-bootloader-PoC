@@ -35,10 +35,21 @@ pub fn patch_dtb_for_linux(
         let mut value = Vec::new();
         value.extend_from_slice(trim_ascii_nul_newline(cmdline));
         value.push(0);
+        crate::logln!("[DTB] /chosen bootargs set: len={}", value.len() - 1);
         node.set_property(NameRef::Owned("bootargs".into()), ValueRef::Owned(value));
+    } else {
+        crate::logln!("[DTB] /chosen bootargs absent");
     }
     let dtb = tree.into_dtb_box().map_err(|_| BootError::DtbPatch)?;
-    if dtb.len() > output_max || output_base & 7 != 0 {
+    let aligned = output_base & 7 == 0;
+    crate::logln!(
+        "[DTB] patched output addr=0x{:x} size={} aligned8={} max={}",
+        output_base,
+        dtb.len(),
+        aligned,
+        output_max
+    );
+    if dtb.len() > output_max || !aligned {
         return Err(BootError::DtbPatch);
     }
     // SAFETY: output_base is the selected DTB copy range and the generated box is initialized.
@@ -46,7 +57,7 @@ pub fn patch_dtb_for_linux(
         core::ptr::copy_nonoverlapping(dtb.as_ptr(), output_base as *mut u8, dtb.len());
     }
     crate::logln!(
-        "[DTB] initrd-start=0x{:x}, initrd-end=0x{:x}",
+        "[DTB] /chosen linux,initrd-start=0x{:x}, linux,initrd-end=0x{:x}",
         initrd_start,
         initrd_end
     );

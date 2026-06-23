@@ -1,7 +1,7 @@
 use crate::BootError;
 
 pub const DTB_PTR: usize = 0x2000_0000;
-pub const KERNEL_LOAD_BASE: usize = 0x0300_0000;
+pub const KERNEL_LOAD_BASE: usize = 0x0600_0000;
 pub const KERNEL_MAX_SIZE: usize = 0x0800_0000;
 pub const INITRAMFS_LOAD_BASE: usize = 0x1000_0000;
 pub const INITRAMFS_MAX_SIZE: usize = 0x0800_0000;

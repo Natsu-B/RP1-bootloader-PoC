@@ -12,34 +12,111 @@ const SDHCI_RESET_CMD: u8 = 0x02;
 const SDHCI_RESET_DATA: u8 = 0x04;
 const SDHCI_INT_ALL_MASK: u32 = u32::MAX;
 const SDHC_HOST_FALLBACK_BASE: usize = 0x10_00ff_f000;
+const ARM64_IMAGE_BASE_ALIGN: usize = 0x20_0000;
 
 pub struct LinuxImage {
     pub entry: usize,
     pub image_size: usize,
+    pub text_offset: usize,
+    pub flags: u64,
+    pub image_base: usize,
 }
 
-pub fn validate_arm64_image(base: usize, loaded_len: usize) -> Result<LinuxImage, BootError> {
+pub struct El2DebugRegs {
+    pub daif: u64,
+    pub current_el: u64,
+    pub sctlr_el2: u64,
+    pub hcr_el2: u64,
+    pub vttbr_el2: u64,
+    pub cntvoff_el2: u64,
+    pub cptr_el2: u64,
+}
+
+pub fn validate_arm64_image(
+    base: usize,
+    loaded_len: usize,
+    max_len: usize,
+) -> Result<LinuxImage, BootError> {
     if loaded_len < 64 {
         return Err(BootError::LinuxImageInvalid);
     }
     // SAFETY: kernel image has just been copied to this physical range.
     let hdr = unsafe { core::slice::from_raw_parts(base as *const u8, 64) };
+    let text_offset = le64(hdr, 8)? as usize;
     if hdr[56..60] != ARM64_IMAGE_MAGIC {
+        crate::logln!(
+            "[KERNEL] Image header invalid: load=0x{:x} text_offset=0x{:x} magic={:02x}{:02x}{:02x}{:02x}",
+            base,
+            text_offset,
+            hdr[56],
+            hdr[57],
+            hdr[58],
+            hdr[59]
+        );
         return Err(BootError::LinuxImageInvalid);
     }
     let image_size = le64(hdr, 16)? as usize;
+    let flags = le64(hdr, 24)?;
     let image_size = if image_size == 0 {
         loaded_len
     } else {
         image_size
     };
-    if image_size > loaded_len {
+    let Some(image_base) = base.checked_sub(text_offset) else {
+        crate::logln!(
+            "[KERNEL] Image placement invalid: load=0x{:x} text_offset=0x{:x} computed_base=underflow aligned=false",
+            base,
+            text_offset
+        );
+        return Err(BootError::LinuxImageInvalid);
+    };
+    let aligned = image_base & (ARM64_IMAGE_BASE_ALIGN - 1) == 0;
+    if !aligned {
+        crate::logln!(
+            "[KERNEL] Image placement invalid: load=0x{:x} text_offset=0x{:x} computed_base=0x{:x} aligned=false",
+            base,
+            text_offset,
+            image_base
+        );
         return Err(BootError::LinuxImageInvalid);
     }
-    crate::logln!("[KERNEL] Image header ok, entry=0x{:x}", base);
+    if image_size > max_len {
+        crate::logln!(
+            "[KERNEL] Image header invalid: image_size={} max_len={} load=0x{:x} text_offset=0x{:x} computed_base=0x{:x} aligned={}",
+            image_size,
+            max_len,
+            base,
+            text_offset,
+            image_base,
+            aligned
+        );
+        return Err(BootError::LinuxImageInvalid);
+    }
+    if image_size > loaded_len {
+        let zero_len = image_size - loaded_len;
+        // SAFETY: caller reserved `max_len` bytes at `base`, and image_size <= max_len.
+        unsafe {
+            core::ptr::write_bytes((base + loaded_len) as *mut u8, 0, zero_len);
+        }
+        crate::logln!(
+            "[KERNEL] Image header size extends loaded file; zero-filled {} bytes",
+            zero_len
+        );
+    }
+    crate::logln!(
+        "[KERNEL] Image header ok, entry=0x{:x} image_size={} text_offset=0x{:x} flags=0x{:x} image_base=0x{:x}",
+        base,
+        image_size,
+        text_offset,
+        flags,
+        image_base
+    );
     Ok(LinuxImage {
         entry: base,
         image_size,
+        text_offset,
+        flags,
+        image_base,
     })
 }
 
@@ -100,6 +177,35 @@ pub fn invalidate_icache_all() {
             "isb",
             options(nostack, preserves_flags)
         );
+    }
+}
+
+pub fn read_el2_debug_regs() -> El2DebugRegs {
+    let daif: u64;
+    let current_el: u64;
+    let sctlr_el2: u64;
+    let hcr_el2: u64;
+    let vttbr_el2: u64;
+    let cntvoff_el2: u64;
+    let cptr_el2: u64;
+    // SAFETY: read-only system register diagnostics before terminal handoff.
+    unsafe {
+        core::arch::asm!("mrs {out}, DAIF", out = out(reg) daif, options(nostack, preserves_flags));
+        core::arch::asm!("mrs {out}, CurrentEL", out = out(reg) current_el, options(nostack, preserves_flags));
+        core::arch::asm!("mrs {out}, SCTLR_EL2", out = out(reg) sctlr_el2, options(nostack, preserves_flags));
+        core::arch::asm!("mrs {out}, HCR_EL2", out = out(reg) hcr_el2, options(nostack, preserves_flags));
+        core::arch::asm!("mrs {out}, VTTBR_EL2", out = out(reg) vttbr_el2, options(nostack, preserves_flags));
+        core::arch::asm!("mrs {out}, CNTVOFF_EL2", out = out(reg) cntvoff_el2, options(nostack, preserves_flags));
+        core::arch::asm!("mrs {out}, CPTR_EL2", out = out(reg) cptr_el2, options(nostack, preserves_flags));
+    }
+    El2DebugRegs {
+        daif,
+        current_el,
+        sctlr_el2,
+        hcr_el2,
+        vttbr_el2,
+        cntvoff_el2,
+        cptr_el2,
     }
 }
 

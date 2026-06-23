@@ -312,6 +312,7 @@ dependencies = [
  "filesystem",
  "miniz_oxide",
  "mutex",
+ "timer",
 ]
 
 [[package]]
