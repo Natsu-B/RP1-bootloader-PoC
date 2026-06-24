@@ -18,8 +18,44 @@ pub struct Rp1Image<'a> {
 
 #[derive(Clone, Copy)]
 pub enum Rp1ImageSource {
+    Rp1Elf,
     Rp1Img,
     FwParts,
+}
+
+/// Builds an RP1 bootstrap image from generic ELF32 ARM load segments.
+///
+/// Stack and Thumb-state policy remain in this RP1-specific layer; the generic
+/// ELF materializer only copies loadable memory ranges.
+pub fn build_from_rp1_elf<'a>(
+    elf_bytes: &[u8],
+    scratch: &'a mut [u8],
+    fallback_stack: u32,
+) -> Result<Rp1Image<'a>, BootError> {
+    let materialized = elf::materialize_elf32_arm_le(
+        elf_bytes,
+        scratch,
+        elf::MaterializeOptions {
+            load_base: u64::from(RP1_SRAM_BASE),
+            max_image_size: scratch.len(),
+            require_entry_in_range: true,
+        },
+    )
+    .map_err(|_| BootError::Rp1ImageInvalid)?;
+    if materialized.image_len == 0 || materialized.image_len > RP1_MAX_IMAGE_LEN {
+        return Err(BootError::Rp1ImageTooLarge);
+    }
+    let entry = u32::try_from(materialized.entry).map_err(|_| BootError::Rp1ImageInvalid)?;
+    if entry == 0 || fallback_stack == 0 {
+        return Err(BootError::Rp1ImageInvalid);
+    }
+    Ok(Rp1Image {
+        payload: &scratch[..materialized.image_len],
+        load_addr: RP1_SRAM_BASE,
+        entry: entry | 1,
+        stack: fallback_stack,
+        source: Rp1ImageSource::Rp1Elf,
+    })
 }
 
 pub fn parse_rp1_img(bytes: &[u8]) -> Result<Rp1Image<'_>, BootError> {
@@ -67,11 +103,11 @@ pub fn parse_rp1_img(bytes: &[u8]) -> Result<Rp1Image<'_>, BootError> {
     })
 }
 
-pub fn build_from_fw_parts<'a>(
-    fw1: &'a [u8],
-    fw2: &'a [u8],
-    scratch: &'a mut [u8],
-) -> Result<Rp1Image<'a>, BootError> {
+pub fn build_from_fw_parts<'scratch>(
+    fw1: &[u8],
+    fw2: &[u8],
+    scratch: &'scratch mut [u8],
+) -> Result<Rp1Image<'scratch>, BootError> {
     let total = fw1
         .len()
         .checked_add(fw2.len())

@@ -9,6 +9,7 @@ use core::alloc::{GlobalAlloc, Layout as CoreLayout};
 use core::arch::global_asm;
 use core::cell::UnsafeCell;
 
+#[cfg(not(feature = "tftp-boot"))]
 use arch_hal::soc::bcm2712;
 use block_device_api::BlockDevice;
 use dtb::DtbParser;
@@ -222,6 +223,7 @@ fn main_flow() -> Result<(), BootError> {
 
         boot_files::probe_file(sdhc, "/config.txt", "/config.txt before reset")?;
 
+        let rp1_elf_file;
         let rp1_img_file;
         let fw1_holder;
         let fw2_holder;
@@ -229,6 +231,15 @@ fn main_flow() -> Result<(), BootError> {
             logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
             None
         } else {
+            rp1_elf_file = read_first_optional_file(
+                sdhc,
+                &["/RP1.elf", "/rp1/RP1.elf", "/rp1/rp1.elf", "/RP1/RP1.ELF"],
+            )?;
+            if rp1_elf_file.is_some() {
+                logln!("[SD] /RP1.elf found");
+            } else {
+                logln!("[SD] /RP1.elf not found");
+            }
             rp1_img_file = read_first_optional_file(
                 sdhc,
                 &["/RP1.img", "/rp1/RP1.img", "/rp1/rp1.img", "/RP1/RP1.IMG"],
@@ -240,7 +251,21 @@ fn main_flow() -> Result<(), BootError> {
             }
 
             let fw_scratch = placement::rp1_scratch_slice();
-            if let Some(ref image_bytes) = rp1_img_file {
+            if let Some(ref elf_bytes) = rp1_elf_file {
+                let image = rp1_image::build_from_rp1_elf(
+                    elf_bytes,
+                    fw_scratch,
+                    rp1_image::RP1_FALLBACK_STACK,
+                )?;
+                logln!(
+                    "[RP1ELF] load_base=0x{:x} image_len={} entry=0x{:x} stack=0x{:x}",
+                    image.load_addr,
+                    image.payload.len(),
+                    image.entry,
+                    image.stack
+                );
+                Some(image)
+            } else if let Some(ref image_bytes) = rp1_img_file {
                 let image = rp1_image::parse_rp1_img(image_bytes)?;
                 logln!(
                     "[SD] /RP1.img ok: payload={} load=0x{:x} entry=0x{:x} stack=0x{:x}",
@@ -312,6 +337,7 @@ fn main_flow() -> Result<(), BootError> {
 
         if let Some(rp1_image) = rp1_image {
             let source = match rp1_image.source {
+                rp1_image::Rp1ImageSource::Rp1Elf => "RP1.elf",
                 rp1_image::Rp1ImageSource::Rp1Img => "RP1.img",
                 rp1_image::Rp1ImageSource::FwParts => "fw-parts",
             };
@@ -495,6 +521,98 @@ fn handle_rp1_bootstrap_failure(err: BootError) -> Result<(), BootError> {
     } else {
         Err(err)
     }
+}
+
+/// Loads and starts RP1 firmware selected from the SD boot partition.
+///
+/// This is also used by the TFTP kernel path: AArch64 kernel transport and RP1
+/// firmware source remain separate policies for the first combined bring-up.
+pub(crate) fn boot_rp1_from_sd(
+    sdhc: &'static dyn BlockDevice,
+    dtb: &DtbParser,
+) -> Result<(), BootError> {
+    boot_files::probe_file(sdhc, "/config.txt", "/config.txt before RP1 reset")?;
+    if cfg!(feature = "skip-rp1-reload") {
+        logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
+        return Ok(());
+    }
+
+    let rp1_elf_file = read_first_optional_file(
+        sdhc,
+        &["/RP1.elf", "/rp1/RP1.elf", "/rp1/rp1.elf", "/RP1/RP1.ELF"],
+    )?;
+    if rp1_elf_file.is_some() {
+        logln!("[SD] /RP1.elf found");
+    }
+    let rp1_img_file = read_first_optional_file(
+        sdhc,
+        &["/RP1.img", "/rp1/RP1.img", "/rp1/rp1.img", "/RP1/RP1.IMG"],
+    )?;
+    let scratch = placement::rp1_scratch_slice();
+    let image = if let Some(ref elf_bytes) = rp1_elf_file {
+        let image =
+            rp1_image::build_from_rp1_elf(elf_bytes, scratch, rp1_image::RP1_FALLBACK_STACK)?;
+        logln!(
+            "[RP1ELF] load_base=0x{:x} image_len={} entry=0x{:x} stack=0x{:x}",
+            image.load_addr,
+            image.payload.len(),
+            image.entry,
+            image.stack
+        );
+        Some(image)
+    } else if let Some(ref image_bytes) = rp1_img_file {
+        Some(rp1_image::parse_rp1_img(image_bytes)?)
+    } else {
+        if cfg!(feature = "require-rp1-img") {
+            return Err(BootError::SdFileNotFound);
+        }
+        let fw1 = read_first_optional_file(
+            sdhc,
+            &[
+                "/rp1c0fw1.bin",
+                "/rp1/rp1c0fw1.bin",
+                "/RP1/FW1.BIN",
+                "/RP1C0FW1.BIN",
+            ],
+        )?;
+        let fw2 = read_first_optional_file(
+            sdhc,
+            &[
+                "/rp1c0fw2.bin",
+                "/rp1/rp1c0fw2.bin",
+                "/RP1/FW2.BIN",
+                "/RP1C0FW2.BIN",
+            ],
+        )?;
+        match (fw1, fw2) {
+            (Some(fw1), Some(fw2)) => Some(rp1_image::build_from_fw_parts(&fw1, &fw2, scratch)?),
+            _ => None,
+        }
+    };
+    let Some(image) = image else {
+        return handle_rp1_bootstrap_failure(BootError::SdFileNotFound);
+    };
+    let source = match image.source {
+        rp1_image::Rp1ImageSource::Rp1Elf => "RP1.elf",
+        rp1_image::Rp1ImageSource::Rp1Img => "RP1.img",
+        rp1_image::Rp1ImageSource::FwParts => "fw-parts",
+    };
+    logln!("[RP1IMG] source={}", source);
+    let i2c = bcm2712_i2c::Bcm2712I2c::from_dtb_or_fallback(dtb);
+    let run = bcm2712_aon::Rp1RunPin::from_dtb_or_fallback(dtb);
+    let mut bootstrap = rp1_bootstrap::Rp1Bootstrap::new(i2c, run);
+    match bootstrap.reset_into_bootrom() {
+        Ok(Some(chip_id)) => logln!("[RP1BOOT] chip id = 0x{:08x}", chip_id),
+        Ok(None) => {
+            logln!("[RP1BOOT] chip id unavailable; continuing with write-only bootstrap path")
+        }
+        Err(err) => return handle_rp1_bootstrap_failure(err),
+    }
+    if let Err(err) = bootstrap.load_and_start(&image) {
+        handle_rp1_bootstrap_failure(err)?;
+    }
+    boot_files::probe_file(sdhc, "/config.txt", "/config.txt after RP1 reset")?;
+    Ok(())
 }
 
 pub fn fatal(err: BootError) -> ! {

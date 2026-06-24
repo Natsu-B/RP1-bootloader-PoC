@@ -120,6 +120,7 @@ Required:
 
 Preferred RP1 firmware image:
 
+- `/RP1.elf` (ELF32 little-endian ARM executable)
 - `/RP1.img`
 
 Fallback RP1 firmware parts:
@@ -136,7 +137,23 @@ Optional file reads only return `None` for FAT `NotFound`. SD mount, open, and
 read errors remain fatal so a damaged SD/FAT path is not mistaken for an absent
 optional file.
 
-## RP1.img Format
+## RP1 ELF and image formats
+
+`/RP1.elf` is preferred when present. The loader accepts only ELF32
+little-endian ARM `ET_EXEC` files, materializes `PT_LOAD` segments by their
+`p_paddr` values into the RP1 scratch image beginning at `0x20000000`, and
+zero-fills holes and `.bss` tails. `PT_INTERP`, `PT_DYNAMIC`, overlap, invalid
+alignment, and out-of-range segments are fatal. The generic ELF layer does not
+invent a stack or alter the entry; the PoC applies the configured fallback
+stack and sets the Thumb bit before RP1 bootstrap.
+
+Search order is `/RP1.elf`, `/rp1/RP1.elf`, `/rp1/rp1.elf`,
+`/RP1/RP1.ELF`, then the existing `/RP1.img` paths, then fw-parts when
+permitted. A present but invalid `/RP1.elf` is fatal and is never silently
+replaced by another firmware source.
+
+`/RP1.img` remains supported and has the following 32-byte little-endian
+header:
 
 `/RP1.img` starts with a 32-byte little-endian header followed by the payload:
 
@@ -169,7 +186,7 @@ The second part is not reloaded at `0x20000000`; it follows the first part.
 
 Fallback fw-parts mode uses `RP1_FALLBACK_ENTRY=0x20000141` and
 `RP1_FALLBACK_STACK=0x100030d0`. This is analysis-derived and less safe than
-`/RP1.img`; prefer `/RP1.img` because it carries exact entry and stack metadata.
+`/RP1.elf` or `/RP1.img`; prefer either explicit image format over fw-parts.
 
 Build features:
 
@@ -369,8 +386,9 @@ The following order is the same for UART and semihosting backends:
 [RP1] existing RP1 visible
 [SDHC] init ok
 [SD] /config.txt before reset ok: size=...
-[SD] /RP1.img found / not found
-[RP1IMG] source=RP1.img / fw-parts
+[SD] /RP1.elf found / not found
+[RP1ELF] load_base=... image_len=... entry=... stack=...
+[RP1IMG] source=RP1.elf / RP1.img / fw-parts
 [RP1BOOT] reset low
 [RP1BOOT] reset low delay 50000 us
 [RP1BOOT] reset high

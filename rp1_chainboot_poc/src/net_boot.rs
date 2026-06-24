@@ -7,6 +7,7 @@ use alloc::vec;
 use arch_hal::soc::bcm2712;
 use arch_hal::soc::bcm2712::rp1_gem::Rp1Gem;
 use arch_hal::soc::bcm2712::rp1_gem::Rp1GemOptions;
+use block_device_api::BlockDevice;
 use io_api::ethernet::MacAddr;
 use net::Ipv4Addr;
 use net::tftp;
@@ -67,6 +68,11 @@ pub fn boot_from_tftp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
         TFTP_TIMEOUT_US,
         TFTP_MAX_RETRIES
     );
+    let sdhc: &'static dyn BlockDevice = bcm2712::sdhc::init_from_dtb(dtb).map_err(|err| {
+        crate::logln!("[TFTP] SDHC init for RP1 firmware failed: {:?}", err);
+        BootError::SdMount
+    })?;
+    crate::boot_rp1_from_sd(sdhc, dtb)?;
     let rp1 = bcm2712::init_rp1_with_options(
         dtb,
         bcm2712::Rp1InitOptions {
