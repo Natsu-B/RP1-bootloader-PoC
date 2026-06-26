@@ -258,9 +258,17 @@ Use a nightly Rust toolchain with `rust-src`, `llvm-tools-preview`, and the
 `aarch64-unknown-none-softfloat` target. The included flake provides that setup.
 
 ```sh
+nix develop
 cargo run
 cargo xbuild
 cargo xrun
+```
+
+The dev shell also provides convenience wrappers:
+
+```sh
+build-bootloader
+build-bootloader-tftp
 ```
 
 Generated artifacts:
@@ -296,6 +304,10 @@ Build with the repository's nightly toolchain:
 ```sh
 cargo +nightly xbuild --features tftp-boot
 ```
+
+Inside `nix develop`, the `cargo` wrapper accepts the `+nightly` rustup-style
+selector for compatibility with this command. `build-bootloader-tftp` is the
+same build with the repository dev shell toolchain.
 
 For a direct host link, use a TFTP root that contains the configured filenames,
 then bind the server to the host Ethernet interface. `dnsmasq` can run without
