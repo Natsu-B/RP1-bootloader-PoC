@@ -316,14 +316,18 @@ crate build script emits a warning pointing users at `cargo xbuild` and
 The `tftp-boot` feature is an alternate boot source. It leaves the SDHC path
 unchanged when disabled, but when enabled it initializes RP1 PCIe in `Auto`
 mode, initializes `Rp1Gem`, resolves the configured server with ARP, downloads
-`BCM2712.img` through the reusable `net::tftp::download_into` client, stages
-and decompresses it when necessary, validates the arm64 Image, patches the
-DTB, quiesces GEM, cleans the handoff ranges, and enters the existing EL2
-handoff path. It never continues after a failed or partial kernel download.
+`RP1.elf` and optional `config_rp1.txt` from the TFTP root, applies the
+`.note.rp1` policy, reloads RP1 through the existing I2C bootstrap path,
+downloads `BCM2712.img` through the reusable `net::tftp::download_into` client,
+stages and decompresses it when necessary, validates the arm64 Image, patches
+the DTB, quiesces GEM, cleans the handoff ranges, and enters the existing EL2
+handoff path. The TFTP boot path does not require SDHC to be present. It never
+continues after a failed or partial RP1 ELF or kernel download.
 
 Network constants are intentionally kept at the top of
 `rp1_chainboot_poc/src/net_boot.rs`. The current lab defaults are local
-`192.168.3.2`, server `192.168.3.1`, and filename `BCM2712.img`. Update these
+`192.168.50.25`, server `192.168.50.1`, RP1 filename `RP1.elf`, RP1 config
+filename `config_rp1.txt`, and kernel filename `BCM2712.img`. Update these
 values together for a different direct Ethernet network. The optional
 `tftp-initramfs` feature additionally downloads `initramfs_2712` into the
 existing initramfs placement range.
@@ -343,7 +347,7 @@ then bind the server to the host Ethernet interface. `dnsmasq` can run without
 a DNS service as follows:
 
 ```sh
-sudo ip addr replace 192.168.3.1/24 dev <cm5-ethernet-iface>
+sudo ip addr replace 192.168.50.1/24 dev <cm5-ethernet-iface>
 sudo ip link set <cm5-ethernet-iface> up
 sudo dnsmasq --keep-in-foreground --port=0 --interface=<cm5-ethernet-iface> \
   --bind-interfaces --enable-tftp --tftp-root=/tmp/rp1-tftp --log-queries
@@ -352,6 +356,37 @@ sudo dnsmasq --keep-in-foreground --port=0 --interface=<cm5-ethernet-iface> \
 Capture `arp or udp` on the host interface during a hardware run. A valid TFTP
 server chooses its own UDP transfer port after the RRQ; the client binds that
 port after the first DATA packet and rejects later DATA from another port.
+
+### RP1 note policy hardware smoke
+
+CM5 Lite TFTP smoke testing on 2026-06-27 used TFTP root
+`/opt/rpi-cm5-hack/tftpboot`, CM5 reboot command
+`/opt/rpi-cm5-hack/scripts/cm5ctl.py force-boot`, and UART capture command
+`/opt/rpi-cm5-hack/scripts/capture-uart.sh --uart10 /dev/cm5-uart10 --analyze`.
+The test temporarily replaced `kernel_2712.img` with `rp1_chainboot_poc.img`,
+added `BCM2712.img`, `RP1.elf`, and `config_rp1.txt`, then restored the original
+TFTP root. The pre-test manifest is in
+`/opt/rpi-cm5-hack/backups/rp1-note-policy-20260627-005533/manifest.txt`, and
+the restore log is in
+`/opt/rpi-cm5-hack/logs/20260627-011738-rp1-note-policy-tftp-restore/restore.log`.
+
+Observed UART10 policy results:
+
+- missing `.note.rp1` with `force_boot = true`:
+  `[RP1NOTE] missing; legacy ELF boot allowed by /config_rp1.txt force_boot=true`
+- missing `.note.rp1` with `force_boot = false`:
+  `[RP1NOTE] missing; refusing legacy ELF boot without force_boot=true`
+  followed by `[FATAL] MissingRp1Note`
+- invalid `.note.rp1` with `force_boot = true`:
+  `[RP1NOTE] invalid; refusing RP1 ELF boot` followed by
+  `[FATAL] InvalidRp1Note`
+- valid `.note.rp1`:
+  `[RP1NOTE] valid: owner_rp1=0x343 owner_linux=0x34 owner_disabled=0x80 mailbox=0x0 version_kind=0`
+
+The valid and missing-allowed tests reached RP1 I2C bootstrap and logged
+`[RP1BOOT] proc0 started`. The smoke `RP1.elf` was a minimal test image, not a
+real GEM firmware, so the later `BCM2712.img` TFTP download timed out after the
+RP1 reload. That timeout is outside the note policy check.
 
 ## Gzip
 

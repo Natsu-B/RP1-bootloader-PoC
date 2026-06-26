@@ -257,7 +257,7 @@ fn main_flow() -> Result<(), BootError> {
 
             let fw_scratch = placement::rp1_scratch_slice();
             if let Some(ref elf_bytes) = rp1_elf_file {
-                enforce_rp1_elf_note_policy(sdhc, elf_bytes)?;
+                enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?;
                 let image = rp1_image::build_from_rp1_elf(
                     elf_bytes,
                     fw_scratch,
@@ -556,7 +556,7 @@ pub(crate) fn boot_rp1_from_sd(
     )?;
     let scratch = placement::rp1_scratch_slice();
     let image = if let Some(ref elf_bytes) = rp1_elf_file {
-        enforce_rp1_elf_note_policy(sdhc, elf_bytes)?;
+        enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?;
         let image =
             rp1_image::build_from_rp1_elf(elf_bytes, scratch, rp1_image::RP1_FALLBACK_STACK)?;
         logln!(
@@ -599,6 +599,15 @@ pub(crate) fn boot_rp1_from_sd(
     let Some(image) = image else {
         return handle_rp1_bootstrap_failure(BootError::SdFileNotFound);
     };
+    start_rp1_image(dtb, &image)?;
+    boot_files::probe_file(sdhc, "/config.txt", "/config.txt after RP1 reset")?;
+    Ok(())
+}
+
+pub(crate) fn start_rp1_image(
+    dtb: &DtbParser,
+    image: &rp1_image::Rp1Image<'_>,
+) -> Result<(), BootError> {
     let source = match image.source {
         rp1_image::Rp1ImageSource::Rp1Elf => "RP1.elf",
         rp1_image::Rp1ImageSource::Rp1Img => "RP1.img",
@@ -615,16 +624,30 @@ pub(crate) fn boot_rp1_from_sd(
         }
         Err(err) => return handle_rp1_bootstrap_failure(err),
     }
-    if let Err(err) = bootstrap.load_and_start(&image) {
+    if let Err(err) = bootstrap.load_and_start(image) {
         handle_rp1_bootstrap_failure(err)?;
     }
-    boot_files::probe_file(sdhc, "/config.txt", "/config.txt after RP1 reset")?;
     Ok(())
 }
 
-fn enforce_rp1_elf_note_policy(
+fn enforce_rp1_elf_note_policy_from_sd(
     sdhc: &'static dyn BlockDevice,
     elf_bytes: &[u8],
+) -> Result<(), BootError> {
+    let cfg_file = if matches!(
+        rp1_note::parse_rp1_note(elf_bytes),
+        rp1_note::Rp1NoteState::Missing
+    ) {
+        boot_files::read_optional_file(sdhc, "/config_rp1.txt")?
+    } else {
+        None
+    };
+    enforce_rp1_elf_note_policy_with_config(elf_bytes, cfg_file.as_deref())
+}
+
+pub(crate) fn enforce_rp1_elf_note_policy_with_config(
+    elf_bytes: &[u8],
+    cfg_file: Option<&[u8]>,
 ) -> Result<(), BootError> {
     match rp1_note::parse_rp1_note(elf_bytes) {
         rp1_note::Rp1NoteState::Valid(note) => {
@@ -639,8 +662,7 @@ fn enforce_rp1_elf_note_policy(
             Ok(())
         }
         rp1_note::Rp1NoteState::Missing => {
-            let cfg_file = boot_files::read_optional_file(sdhc, "/config_rp1.txt")?;
-            let cfg = rp1_config::parse_optional_config(cfg_file.as_deref())
+            let cfg = rp1_config::parse_optional_config(cfg_file)
                 .map_err(|_| BootError::Rp1ConfigInvalid)?;
             if cfg.force_boot {
                 logln!(
