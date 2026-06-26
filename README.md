@@ -181,6 +181,63 @@ linux_pio = false
 `linux_pio = true` is reserved for a future RP1 PIO firmware mode and is
 currently rejected as an invalid config.
 
+### RP1 DTB ownership policy
+
+When `/RP1.elf` is used, the bootloader derives an RP1 ownership policy before
+building the Linux handoff DTB.
+
+- `.note.rp1` valid:
+  - owner bitmap from note is used
+  - `config_rp1.txt` owner table is ignored
+
+- `.note.rp1` missing:
+  - `force_boot = true` is required
+  - `[owner]` table in `config_rp1.txt` is required
+
+- `owner = rp1`:
+  - matching Linux DTB node is disabled
+
+- `owner = disabled`:
+  - matching Linux DTB node is disabled
+
+- `owner = linux`:
+  - matching Linux DTB node is set to `okay`
+
+- Linux PIO ownership is not supported yet
+
+The current CM5 DTB node map is based on
+`bcm2712-rpi-cm5l-cm5io.dtb`/`bcm2712-rpi-cm5l-cm4io.dtb`:
+
+- `gpio`: `/axi/pcie@1000120000/rp1/gpio@d0000`
+- `uart0`: `/axi/pcie@1000120000/rp1/serial@30000`
+- `uart1`: `/axi/pcie@1000120000/rp1/serial@34000`
+- `i2c0`: `/axi/pcie@1000120000/rp1/i2c@70000`
+- `i2c1`: `/axi/pcie@1000120000/rp1/i2c@74000`
+- `spi0`: `/axi/pcie@1000120000/rp1/spi@50000`
+- `pio0`/`pio1`: `/axi/pcie@1000120000/rp1/pio@178000`
+- `dma`: `/axi/pcie@1000120000/rp1/dma@188000`
+- `timer`: no Linux-visible RP1 timer node in the tested DTB, so it is
+  validated in the ownership bitmap but not patched
+
+Minimal config fallback with ownership:
+
+```text
+force_boot = true
+linux_pio = false
+
+[owner]
+gpio = "rp1"
+uart0 = "rp1"
+uart1 = "linux"
+i2c0 = "linux"
+i2c1 = "linux"
+spi0 = "linux"
+pio0 = "rp1"
+pio1 = "disabled"
+dma = "rp1"
+timer = "rp1"
+```
+
 `/RP1.img` remains supported and has the following 32-byte little-endian
 header:
 
@@ -387,6 +444,37 @@ The valid and missing-allowed tests reached RP1 I2C bootstrap and logged
 `[RP1BOOT] proc0 started`. The smoke `RP1.elf` was a minimal test image, not a
 real GEM firmware, so the later `BCM2712.img` TFTP download timed out after the
 RP1 reload. That timeout is outside the note policy check.
+
+### RP1 DTB ownership hardware smoke
+
+CM5 Lite TFTP smoke testing on 2026-06-27 used TFTP root
+`/opt/rpi-cm5-hack/tftpboot`, CM5 reboot command
+`/opt/rpi-cm5-hack/scripts/cm5ctl.py force-boot`, and UART capture command
+`/opt/rpi-cm5-hack/scripts/capture-uart.sh --uart10 /dev/cm5-uart10 --analyze`.
+The test temporarily replaced `kernel_2712.img` with a
+`tftp-boot skip-rp1-reload` `rp1_chainboot_poc.img`, added `BCM2712.img`,
+`RP1.elf`, and `config_rp1.txt`, then restored the original TFTP root. The
+pre-test manifest is in
+`/opt/rpi-cm5-hack/backups/20260627-012832-dtb-policy/manifest.txt`, and the
+restore log is in
+`/opt/rpi-cm5-hack/logs/20260627-015144-rp1-dtb-policy-tftp-restore/restore.log`.
+
+Observed UART10 results:
+
+- valid `.note.rp1`:
+  `/opt/rpi-cm5-hack/logs/20260627-013750-uart/uart10.log`
+  logged `source=note`, `uart0 owner=rp1 status=disabled`, `uart1 owner=linux
+  status=okay`, `pio0 owner=rp1 status=disabled`, and `pio1 owner=disabled
+  status=disabled`
+- missing `.note.rp1` with config owner table:
+  `/opt/rpi-cm5-hack/logs/20260627-014731-uart/uart10.log`
+  logged `source=config` with the same DTB status changes
+- invalid owner table with `pio0 = "linux"`:
+  `/opt/rpi-cm5-hack/logs/20260627-014906-uart/uart10.log`
+  logged `[FATAL] Rp1DtbPolicyInvalid`
+- missing owner table:
+  `/opt/rpi-cm5-hack/logs/20260627-015026-uart/uart10.log`
+  logged `[FATAL] Rp1ConfigInvalid`
 
 ## Gzip
 

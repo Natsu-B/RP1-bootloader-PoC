@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use arch_hal::soc::bcm2712;
 use arch_hal::soc::bcm2712::rp1_gem::Rp1Gem;
 use arch_hal::soc::bcm2712::rp1_gem::Rp1GemOptions;
-use io_api::ethernet::MacAddr;
+use io_api::ethernet::{EthernetFrameIo, MacAddr};
 use net::Ipv4Addr;
 use net::tftp;
 
@@ -16,6 +16,7 @@ use crate::BootError;
 use crate::dtb_patch;
 use crate::linux;
 use crate::placement;
+use crate::rp1_dtb_policy::Rp1DtbPolicy;
 
 const TFTP_LOCAL_MAC: MacAddr = MacAddr([0x2c, 0xcf, 0x67, 0xc2, 0x9a, 0x58]);
 const TFTP_LOCAL_IP: Ipv4Addr = [192, 168, 50, 25];
@@ -23,6 +24,7 @@ const TFTP_SERVER_IP: Ipv4Addr = [192, 168, 50, 1];
 const TFTP_KERNEL_FILENAME: &str = "BCM2712.img";
 const TFTP_RP1_ELF_FILENAME: &str = "RP1.elf";
 const TFTP_RP1_CONFIG_FILENAME: &str = "config_rp1.txt";
+const TFTP_FLUSH_FILENAME: &str = "__rp1_tftp_flush__";
 #[cfg(feature = "tftp-initramfs")]
 const TFTP_INITRAMFS_FILENAME: &str = "initramfs_2712";
 const TFTP_TIMEOUT_US: u64 = 3_000_000;
@@ -74,12 +76,17 @@ pub fn boot_from_tftp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
     );
     let gem = init_tftp_gem(dtb)?;
     let clock = TimerClock::new();
+    let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
 
-    if cfg!(feature = "skip-rp1-reload") {
-        crate::logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
+    let mut rp1_policy = None;
+    if skip_rp1_reload {
+        crate::logln!(
+            "[RP1BOOT] defer RP1 policy load until after kernel TFTP by feature skip-rp1-reload"
+        );
     } else {
-        boot_rp1_from_tftp(dtb, &mut *gem, &clock)?;
+        let policy = boot_rp1_from_tftp(dtb, &mut *gem, &clock)?;
         reinit_rp1_pcie(dtb)?;
+        rp1_policy = Some(policy);
     }
 
     let kernel_cfg = tftp_config(TFTP_KERNEL_FILENAME);
@@ -119,6 +126,11 @@ pub fn boot_from_tftp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
         .checked_add(initramfs_len)
         .ok_or(BootError::AddressOverflow)?;
 
+    if skip_rp1_reload {
+        rp1_policy = Some(load_rp1_policy_from_tftp(&mut *gem, &clock)?);
+        crate::logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
+    }
+
     let patched_dtb = dtb_patch::patch_dtb_for_linux(
         dtb,
         placement::DTB_COPY_BASE,
@@ -126,6 +138,7 @@ pub fn boot_from_tftp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
         initrd_start,
         initrd_end,
         None,
+        rp1_policy.as_ref(),
     )?;
     let regs = linux::read_el2_debug_regs();
     crate::logln!(
@@ -213,19 +226,8 @@ fn boot_rp1_from_tftp(
     dtb: &dtb::DtbParser,
     gem: &mut Rp1Gem,
     clock: &TimerClock,
-) -> Result<(), BootError> {
-    crate::logln!("[TFTP] RP1 ELF download start {}", TFTP_RP1_ELF_FILENAME);
-    let rp1_elf =
-        download_tftp_required(gem, clock, TFTP_RP1_ELF_FILENAME, TFTP_RP1_ELF_STAGING_MAX)?;
-    crate::logln!("[TFTP] RP1 ELF download complete len={}", rp1_elf.len());
-
-    let config = download_tftp_optional(
-        gem,
-        clock,
-        TFTP_RP1_CONFIG_FILENAME,
-        TFTP_RP1_CONFIG_STAGING_MAX,
-    )?;
-    crate::enforce_rp1_elf_note_policy_with_config(&rp1_elf, config.as_deref())?;
+) -> Result<Rp1DtbPolicy, BootError> {
+    let (rp1_elf, policy) = load_rp1_elf_and_policy_from_tftp(gem, clock)?;
 
     let scratch = placement::rp1_scratch_slice();
     let image = crate::rp1_image::build_from_rp1_elf(
@@ -243,7 +245,37 @@ fn boot_rp1_from_tftp(
 
     gem.quiesce();
     crate::logln!("[TFTP] Rp1Gem quiesce before RP1 reload complete");
-    crate::start_rp1_image(dtb, &image)
+    crate::start_rp1_image(dtb, &image)?;
+    Ok(policy)
+}
+
+fn load_rp1_policy_from_tftp(
+    gem: &mut Rp1Gem,
+    clock: &TimerClock,
+) -> Result<Rp1DtbPolicy, BootError> {
+    let (_rp1_elf, policy) = load_rp1_elf_and_policy_from_tftp(gem, clock)?;
+    Ok(policy)
+}
+
+fn load_rp1_elf_and_policy_from_tftp(
+    gem: &mut Rp1Gem,
+    clock: &TimerClock,
+) -> Result<(Vec<u8>, Rp1DtbPolicy), BootError> {
+    crate::logln!("[TFTP] RP1 ELF download start {}", TFTP_RP1_ELF_FILENAME);
+    let rp1_elf =
+        download_tftp_required(gem, clock, TFTP_RP1_ELF_FILENAME, TFTP_RP1_ELF_STAGING_MAX)?;
+    crate::logln!("[TFTP] RP1 ELF download complete len={}", rp1_elf.len());
+
+    let config = download_tftp_optional(
+        gem,
+        clock,
+        TFTP_RP1_CONFIG_FILENAME,
+        TFTP_RP1_CONFIG_STAGING_MAX,
+    )?;
+    let policy = crate::enforce_rp1_elf_note_policy_with_config(&rp1_elf, config.as_deref())?;
+    flush_tftp_transfer(gem, clock)?;
+    drain_rx(gem, clock, 200_000);
+    Ok((rp1_elf, policy))
 }
 
 #[cfg(feature = "tftp-initramfs")]
@@ -319,6 +351,34 @@ fn download_tftp_optional(
     staging.truncate(len);
     crate::logln!("[TFTP] optional {} found len={}", filename, len);
     Ok(Some(staging))
+}
+
+fn flush_tftp_transfer(gem: &mut Rp1Gem, clock: &TimerClock) -> Result<(), BootError> {
+    match download_tftp_optional(gem, clock, TFTP_FLUSH_FILENAME, TFTP_RP1_CONFIG_STAGING_MAX) {
+        Ok(Some(bytes)) => {
+            crate::logln!("[TFTP] flush consumed stale transfer len={}", bytes.len());
+            Ok(())
+        }
+        Ok(None) => {
+            crate::logln!("[TFTP] flush consumed server not-found response");
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn drain_rx(gem: &mut Rp1Gem, clock: &TimerClock, duration_us: u64) {
+    let start = tftp::TftpClock::now_us(clock);
+    let mut frame = [0u8; 1536];
+    let mut drained = 0usize;
+    while tftp::TftpClock::now_us(clock).wrapping_sub(start) < duration_us {
+        if gem.try_recv_frame(&mut frame).is_some() {
+            drained = drained.saturating_add(1);
+        }
+    }
+    if drained != 0 {
+        crate::logln!("[TFTP] drained {} stale RX frames", drained);
+    }
 }
 
 fn gem_failure<T>(

@@ -1,8 +1,12 @@
 use alloc::vec::Vec;
 
-use dtb::{DeviceTree, DeviceTreeEditExt, DeviceTreeOwned, NameRef, NodeEditExt, ValueRef};
+use dtb::{
+    DeviceTree, DeviceTreeEditExt, DeviceTreeOwned, DeviceTreeQueryExt, NameRef, NodeEditExt,
+    ValueRef,
+};
 
 use crate::BootError;
+use crate::rp1_dtb_policy::{RP1_DEVICE_DTB_NODES, Rp1DtbPolicy};
 
 pub struct PatchedDtb {
     pub addr: usize,
@@ -16,6 +20,7 @@ pub fn patch_dtb_for_linux(
     initrd_start: usize,
     initrd_end: usize,
     bootargs: Option<&[u8]>,
+    rp1_policy: Option<&Rp1DtbPolicy>,
 ) -> Result<PatchedDtb, BootError> {
     let borrowed = DeviceTree::from_parser(parser).map_err(|_| BootError::DtbPatch)?;
     let mut tree: DeviceTreeOwned = borrowed.into_owned();
@@ -39,6 +44,11 @@ pub fn patch_dtb_for_linux(
         node.set_property(NameRef::Owned("bootargs".into()), ValueRef::Owned(value));
     } else {
         crate::logln!("[DTB] /chosen bootargs absent");
+    }
+    if let Some(policy) = rp1_policy {
+        apply_rp1_policy(&mut tree, policy)?;
+    } else {
+        crate::logln!("[DTB] RP1 policy absent");
     }
     let dtb = tree.into_dtb_box().map_err(|_| BootError::DtbPatch)?;
     let aligned = output_base & 7 == 0;
@@ -65,6 +75,79 @@ pub fn patch_dtb_for_linux(
         addr: output_base,
         len: dtb.len(),
     })
+}
+
+fn apply_rp1_policy(
+    tree: &mut DeviceTreeOwned<'_>,
+    policy: &Rp1DtbPolicy,
+) -> Result<(), BootError> {
+    crate::logln!(
+        "[DTB] RP1 policy source={} owner_rp1=0x{:x} owner_linux=0x{:x} owner_disabled=0x{:x}",
+        policy.source.as_str(),
+        policy.owner_rp1,
+        policy.owner_linux,
+        policy.owner_disabled
+    );
+    policy.validate()?;
+
+    for spec in RP1_DEVICE_DTB_NODES {
+        let owner = policy.owner_of(spec.bit);
+        let Some(status) = owner.linux_status() else {
+            crate::logln!(
+                "[DTB] rp1 device {} owner={} unspecified",
+                spec.name,
+                owner.as_str()
+            );
+            return Err(BootError::Rp1DtbPolicyInvalid);
+        };
+
+        if spec.fallback_paths.is_empty() {
+            crate::logln!(
+                "[DTB] rp1 device {} owner={} no linux dtb node",
+                spec.name,
+                owner.as_str()
+            );
+            continue;
+        }
+
+        let Some(node_id) = find_existing_node(tree, spec.fallback_paths) else {
+            crate::logln!(
+                "[DTB] rp1 device {} owner={} node not found",
+                spec.name,
+                owner.as_str()
+            );
+            return Err(BootError::Rp1DtbNodeNotFound);
+        };
+        let node = tree.node_mut(node_id).ok_or(BootError::DtbPatch)?;
+        node.set_property(
+            NameRef::Owned("status".into()),
+            ValueRef::Owned(status_prop(status)),
+        );
+        crate::logln!(
+            "[DTB] rp1 device {} owner={} status={}",
+            spec.name,
+            owner.as_str(),
+            status
+        );
+    }
+
+    Ok(())
+}
+
+fn find_existing_node(tree: &DeviceTreeOwned<'_>, paths: &[&str]) -> Option<usize> {
+    for path in paths {
+        if let Some(node) = tree.find_node_by_path(path) {
+            return Some(node);
+        }
+    }
+    None
+}
+
+fn status_prop(value: &str) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(value.as_bytes());
+    bytes.push(0);
+    bytes
 }
 
 fn be64(value: u64) -> Vec<u8> {

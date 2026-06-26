@@ -26,6 +26,7 @@ mod panic;
 mod placement;
 mod rp1_bootstrap;
 mod rp1_config;
+mod rp1_dtb_policy;
 mod rp1_image;
 mod rp1_note;
 
@@ -147,6 +148,8 @@ pub enum BootError {
     MissingRp1Note,
     InvalidRp1Note,
     Rp1ConfigInvalid,
+    Rp1DtbPolicyInvalid,
+    Rp1DtbNodeNotFound,
 }
 
 #[unsafe(no_mangle)]
@@ -232,6 +235,7 @@ fn main_flow() -> Result<(), BootError> {
         let rp1_img_file;
         let fw1_holder;
         let fw2_holder;
+        let mut rp1_policy = None;
         let rp1_image = if cfg!(feature = "skip-rp1-reload") {
             logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
             None
@@ -257,7 +261,7 @@ fn main_flow() -> Result<(), BootError> {
 
             let fw_scratch = placement::rp1_scratch_slice();
             if let Some(ref elf_bytes) = rp1_elf_file {
-                enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?;
+                rp1_policy = Some(enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?);
                 let image = rp1_image::build_from_rp1_elf(
                     elf_bytes,
                     fw_scratch,
@@ -477,6 +481,7 @@ fn main_flow() -> Result<(), BootError> {
             initrd_start,
             initrd_end,
             cmdline.as_deref(),
+            rp1_policy.as_ref(),
         )?;
 
         let regs = linux::read_el2_debug_regs();
@@ -556,7 +561,7 @@ pub(crate) fn boot_rp1_from_sd(
     )?;
     let scratch = placement::rp1_scratch_slice();
     let image = if let Some(ref elf_bytes) = rp1_elf_file {
-        enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?;
+        let _policy = enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?;
         let image =
             rp1_image::build_from_rp1_elf(elf_bytes, scratch, rp1_image::RP1_FALLBACK_STACK)?;
         logln!(
@@ -633,7 +638,7 @@ pub(crate) fn start_rp1_image(
 fn enforce_rp1_elf_note_policy_from_sd(
     sdhc: &'static dyn BlockDevice,
     elf_bytes: &[u8],
-) -> Result<(), BootError> {
+) -> Result<rp1_dtb_policy::Rp1DtbPolicy, BootError> {
     let cfg_file = if matches!(
         rp1_note::parse_rp1_note(elf_bytes),
         rp1_note::Rp1NoteState::Missing
@@ -648,7 +653,7 @@ fn enforce_rp1_elf_note_policy_from_sd(
 pub(crate) fn enforce_rp1_elf_note_policy_with_config(
     elf_bytes: &[u8],
     cfg_file: Option<&[u8]>,
-) -> Result<(), BootError> {
+) -> Result<rp1_dtb_policy::Rp1DtbPolicy, BootError> {
     match rp1_note::parse_rp1_note(elf_bytes) {
         rp1_note::Rp1NoteState::Valid(note) => {
             logln!(
@@ -659,7 +664,7 @@ pub(crate) fn enforce_rp1_elf_note_policy_with_config(
                 note.mailbox_flags,
                 note.firmware_version_kind,
             );
-            Ok(())
+            rp1_dtb_policy::Rp1DtbPolicy::from_note(&note)
         }
         rp1_note::Rp1NoteState::Missing => {
             let cfg = rp1_config::parse_optional_config(cfg_file)
@@ -668,7 +673,7 @@ pub(crate) fn enforce_rp1_elf_note_policy_with_config(
                 logln!(
                     "[RP1NOTE] missing; legacy ELF boot allowed by /config_rp1.txt force_boot=true"
                 );
-                Ok(())
+                rp1_dtb_policy::Rp1DtbPolicy::from_config(&cfg)
             } else {
                 logln!("[RP1NOTE] missing; refusing legacy ELF boot without force_boot=true");
                 Err(BootError::MissingRp1Note)
