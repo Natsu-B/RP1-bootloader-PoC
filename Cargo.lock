@@ -315,6 +315,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp1-abi"
+version = "0.1.0"
+
+[[package]]
 name = "rp1_chainboot_poc"
 version = "0.1.0"
 dependencies = [
@@ -332,6 +336,7 @@ dependencies = [
  "miniz_oxide",
  "mutex",
  "net",
+ "rp1-abi",
  "timer",
 ]
 

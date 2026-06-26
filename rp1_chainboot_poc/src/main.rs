@@ -25,7 +25,9 @@ mod net_boot;
 mod panic;
 mod placement;
 mod rp1_bootstrap;
+mod rp1_config;
 mod rp1_image;
+mod rp1_note;
 
 mod trace {
     use core::cell::UnsafeCell;
@@ -142,6 +144,9 @@ pub enum BootError {
     Rp1Pcie,
     Rp1Gem,
     Tftp,
+    MissingRp1Note,
+    InvalidRp1Note,
+    Rp1ConfigInvalid,
 }
 
 #[unsafe(no_mangle)]
@@ -252,6 +257,7 @@ fn main_flow() -> Result<(), BootError> {
 
             let fw_scratch = placement::rp1_scratch_slice();
             if let Some(ref elf_bytes) = rp1_elf_file {
+                enforce_rp1_elf_note_policy(sdhc, elf_bytes)?;
                 let image = rp1_image::build_from_rp1_elf(
                     elf_bytes,
                     fw_scratch,
@@ -550,6 +556,7 @@ pub(crate) fn boot_rp1_from_sd(
     )?;
     let scratch = placement::rp1_scratch_slice();
     let image = if let Some(ref elf_bytes) = rp1_elf_file {
+        enforce_rp1_elf_note_policy(sdhc, elf_bytes)?;
         let image =
             rp1_image::build_from_rp1_elf(elf_bytes, scratch, rp1_image::RP1_FALLBACK_STACK)?;
         logln!(
@@ -613,6 +620,43 @@ pub(crate) fn boot_rp1_from_sd(
     }
     boot_files::probe_file(sdhc, "/config.txt", "/config.txt after RP1 reset")?;
     Ok(())
+}
+
+fn enforce_rp1_elf_note_policy(
+    sdhc: &'static dyn BlockDevice,
+    elf_bytes: &[u8],
+) -> Result<(), BootError> {
+    match rp1_note::parse_rp1_note(elf_bytes) {
+        rp1_note::Rp1NoteState::Valid(note) => {
+            logln!(
+                "[RP1NOTE] valid: owner_rp1=0x{:x} owner_linux=0x{:x} owner_disabled=0x{:x} mailbox=0x{:x} version_kind={}",
+                note.owner_rp1,
+                note.owner_linux,
+                note.owner_disabled,
+                note.mailbox_flags,
+                note.firmware_version_kind,
+            );
+            Ok(())
+        }
+        rp1_note::Rp1NoteState::Missing => {
+            let cfg_file = boot_files::read_optional_file(sdhc, "/config_rp1.txt")?;
+            let cfg = rp1_config::parse_optional_config(cfg_file.as_deref())
+                .map_err(|_| BootError::Rp1ConfigInvalid)?;
+            if cfg.force_boot {
+                logln!(
+                    "[RP1NOTE] missing; legacy ELF boot allowed by /config_rp1.txt force_boot=true"
+                );
+                Ok(())
+            } else {
+                logln!("[RP1NOTE] missing; refusing legacy ELF boot without force_boot=true");
+                Err(BootError::MissingRp1Note)
+            }
+        }
+        rp1_note::Rp1NoteState::Invalid => {
+            logln!("[RP1NOTE] invalid; refusing RP1 ELF boot");
+            Err(BootError::InvalidRp1Note)
+        }
+    }
 }
 
 pub fn fatal(err: BootError) -> ! {

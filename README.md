@@ -152,6 +152,35 @@ Search order is `/RP1.elf`, `/rp1/RP1.elf`, `/rp1/rp1.elf`,
 permitted. A present but invalid `/RP1.elf` is fatal and is never silently
 replaced by another firmware source.
 
+### RP1.elf note policy
+
+`/RP1.elf` may carry a `.note.rp1` boot note. The current PoC parses the note
+metadata before materializing `PT_LOAD` segments; DTB ownership patching is left
+for a later stage.
+
+- `.note.rp1` valid:
+  - boot normally
+  - log owner bitmap, mailbox flags, and firmware version kind
+  - use note metadata for future DTB ownership policy
+
+- `.note.rp1` missing:
+  - require `/config_rp1.txt` with `force_boot = true`
+  - otherwise refuse RP1 ELF boot
+
+- `.note.rp1` invalid:
+  - always refuse boot
+  - `force_boot = true` is ignored
+
+Minimal legacy fallback config:
+
+```text
+force_boot = true
+linux_pio = false
+```
+
+`linux_pio = true` is reserved for a future RP1 PIO firmware mode and is
+currently rejected as an invalid config.
+
 `/RP1.img` remains supported and has the following 32-byte little-endian
 header:
 
@@ -399,6 +428,9 @@ The following order is the same for UART and semihosting backends:
 [SDHC] init ok
 [SD] /config.txt before reset ok: size=...
 [SD] /RP1.elf found / not found
+[RP1NOTE] valid: owner_rp1=... owner_linux=... owner_disabled=... mailbox=... version_kind=...
+# or, for legacy ELF only when explicitly allowed:
+# [RP1NOTE] missing; legacy ELF boot allowed by /config_rp1.txt force_boot=true
 [RP1ELF] load_base=... image_len=... entry=... stack=...
 [RP1IMG] source=RP1.elf / RP1.img / fw-parts
 [RP1BOOT] reset low

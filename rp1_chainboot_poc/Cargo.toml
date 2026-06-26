@@ -32,3 +32,4 @@ embedded-hal = { version = "1", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"] }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 crc32fast = { version = "1", default-features = false }
+rp1-abi = { path = "../../RP1-hal/crates/rp1-abi" }
