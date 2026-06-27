@@ -38,15 +38,15 @@ jobs:
         working-directory: RP1-bootloader-PoC
         run: |
           nix develop --command bash -euxo pipefail -c '
-            cargo xbuild
+            cargo xbuild --locked
             mkdir -p ci-artifacts/default
             cp -a bin/. ci-artifacts/default/
 
-            cargo xbuild --features tftp-boot
+            cargo xbuild --locked --features tftp-boot
             mkdir -p ci-artifacts/tftp-boot
             cp -a bin/. ci-artifacts/tftp-boot/
 
-            cargo xbuild --no-default-features --features "allow-fw-parts-fallback log-semihosting"
+            cargo xbuild --locked --no-default-features --features "allow-fw-parts-fallback log-semihosting"
             mkdir -p ci-artifacts/semihosting
             cp -a bin/. ci-artifacts/semihosting/
           '
