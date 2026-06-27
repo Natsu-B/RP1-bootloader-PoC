@@ -41,7 +41,10 @@ pub fn build_from_rp1_elf<'a>(
             require_entry_in_range: true,
         },
     )
-    .map_err(|_| BootError::Rp1ImageInvalid)?;
+    .map_err(|err| {
+        crate::logln!("[RP1ELF] materialize failed: {:?}", err);
+        BootError::Rp1ImageInvalid
+    })?;
     if materialized.image_len == 0 || materialized.image_len > RP1_MAX_IMAGE_LEN {
         return Err(BootError::Rp1ImageTooLarge);
     }
