@@ -12,3 +12,16 @@ debug = true
 
 [profile.dev]
 panic = "abort"
+
+[patch."https://github.com/Natsu-B/aarch64_type1_hypervisor.git"]
+allocator = { path = "../aarch64_type1_hypervisor/allocator" }
+arch_hal = { path = "../aarch64_type1_hypervisor/arch_hal" }
+block-device-api = { path = "../aarch64_type1_hypervisor/file/block-device-api" }
+dtb = { path = "../aarch64_type1_hypervisor/dtb" }
+elf = { path = "../aarch64_type1_hypervisor/elf" }
+file = { path = "../aarch64_type1_hypervisor/file" }
+filesystem = { path = "../aarch64_type1_hypervisor/file/filesystem" }
+io-api = { path = "../aarch64_type1_hypervisor/io_api" }
+mutex = { path = "../aarch64_type1_hypervisor/mutex" }
+net = { path = "../aarch64_type1_hypervisor/net" }
+timer = { path = "../aarch64_type1_hypervisor/arch_hal/aarch64_hal/timer" }

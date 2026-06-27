@@ -156,7 +156,8 @@ replaced by another firmware source.
 
 `/RP1.elf` may carry a `.note.rp1` boot note. The current PoC parses the note
 metadata before materializing `PT_LOAD` segments and uses the owner bitmap when
-patching the Linux handoff DTB.
+patching the Linux handoff DTB. This note is the preferred ownership policy
+source for RP1 reloads that hand off to Linux.
 
 - `.note.rp1` valid:
   - boot normally
@@ -164,8 +165,8 @@ patching the Linux handoff DTB.
   - use note metadata for the DTB ownership policy
 
 - `.note.rp1` missing:
-  - require `/config_rp1.txt` with `force_boot = true`
-  - otherwise refuse RP1 ELF boot
+  - require explicit debug override `/config_rp1.txt` with `force_boot = true`
+  - otherwise refuse RP1 ELF boot/Linux handoff
 
 - `.note.rp1` invalid:
   - always refuse boot
@@ -233,6 +234,8 @@ building the Linux handoff DTB.
   - matching Linux DTB node is set to `okay`
 
 - Linux PIO ownership is not supported yet
+- Normal CM5 Linux probing requires GPIO ownership to be returned to Linux, so
+  the default TFTP reload `RP1.elf` note marks `gpio=linux`
 
 The current CM5 DTB node map is based on
 `bcm2712-rpi-cm5l-cm5io.dtb`/`bcm2712-rpi-cm5l-cm4io.dtb`:
@@ -411,6 +414,11 @@ validates the arm64 Image, patches the DTB, quiesces GEM, cleans the handoff
 ranges, and enters the existing EL2 handoff path. The TFTP boot path does not
 require SDHC to be present. It never continues after a failed or partial RP1 ELF
 or kernel download.
+
+Before jumping to Linux, the post-reload `Rp1Gem` is explicitly cleaned up for
+Linux handoff and its singleton claim is released. This stops RX/TX/MDIO, clears
+pending status, neutralizes the bootstrap DMA queue registers, and leaves RP1
+itself running for Linux to probe.
 
 The current lab MAC address used to initialize `Rp1Gem` is kept at the top of
 `rp1_chainboot_poc/src/net_boot.rs`. Client IP and TFTP server IP are not fixed
@@ -600,10 +608,13 @@ Observed `skip-rp1-reload` order:
 ```
 
 On 2026-06-27, `RP1-hal` `examples/minimal` with an attached `.note.rp1` was
-accepted as a valid note:
+updated for Linux handoff ownership and accepted as a valid note:
 
 ```text
-[RP1NOTE] valid: owner_rp1=0x343 owner_linux=0x3c owner_disabled=0x80 mailbox=0x1 version_kind=0
+[RP1NOTE] valid: owner_rp1=0xc0 owner_linux=0x33f owner_disabled=0x0 mailbox=0x1 version_kind=0
+[RP1NOTE] owner gpio=linux
+[RP1NOTE] owner pio0=rp1
+[RP1NOTE] owner pio1=rp1
 ```
 
 RP1-hal minimal firmware smoke:

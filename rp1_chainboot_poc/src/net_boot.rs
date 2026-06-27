@@ -241,16 +241,18 @@ fn boot_kernel_from_tftp_with_lease(
         regs.cptr_el2
     );
 
-    gem.quiesce();
-    crate::logln!("[TFTP] Rp1Gem quiesce complete");
+    // SAFETY: this is the terminal Linux handoff path. The GEM reference is
+    // not used after release; Linux will probe and own the device next.
+    unsafe { gem.release_after_linux_handoff() };
+    crate::logln!("[TFTP] Rp1Gem Linux handoff cleanup complete");
     linux::clean_dcache_poc(kernel.base, image.image_size);
     linux::clean_dcache_poc(initrd_start, initramfs_len);
     linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
     linux::invalidate_icache_all();
 
     // SAFETY: all downloaded artifacts were bounded, kernel header validated,
-    // DTB was patched into its reserved range, GEM was quiesced, and cache
-    // maintenance completed before the terminal EL2 handoff.
+    // DTB was patched into its reserved range, GEM was released for Linux, and
+    // cache maintenance completed before the terminal EL2 handoff.
     unsafe { linux::jump_to_linux_el2(image.entry, patched_dtb.addr) }
 }
 

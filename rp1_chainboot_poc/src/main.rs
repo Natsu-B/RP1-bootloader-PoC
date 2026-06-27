@@ -695,25 +695,41 @@ pub(crate) fn enforce_rp1_elf_note_policy_with_config(
                 note.mailbox_flags,
                 note.firmware_version_kind,
             );
-            rp1_dtb_policy::Rp1DtbPolicy::from_note(&note)
+            let policy = rp1_dtb_policy::Rp1DtbPolicy::from_note(&note)?;
+            log_rp1_note_policy_owners(&policy);
+            Ok(policy)
         }
         rp1_note::Rp1NoteState::Missing => {
             let cfg = rp1_config::parse_optional_config(cfg_file)
                 .map_err(|_| BootError::Rp1ConfigInvalid)?;
             if cfg.force_boot {
                 logln!(
-                    "[RP1NOTE] missing; legacy ELF boot allowed by /config_rp1.txt force_boot=true"
+                    "[RP1NOTE] missing; using explicit /config_rp1.txt debug override force_boot=true"
                 );
-                rp1_dtb_policy::Rp1DtbPolicy::from_config(&cfg)
+                let policy = rp1_dtb_policy::Rp1DtbPolicy::from_config(&cfg)?;
+                log_rp1_note_policy_owners(&policy);
+                Ok(policy)
             } else {
-                logln!("[RP1NOTE] missing; refusing legacy ELF boot without force_boot=true");
+                logln!(
+                    "[RP1NOTE] missing; refusing Linux handoff without valid .note.rp1 or explicit config override"
+                );
                 Err(BootError::MissingRp1Note)
             }
         }
         rp1_note::Rp1NoteState::Invalid => {
-            logln!("[RP1NOTE] invalid; refusing RP1 ELF boot");
+            logln!("[RP1NOTE] invalid; refusing RP1 reload/Linux handoff");
             Err(BootError::InvalidRp1Note)
         }
+    }
+}
+
+fn log_rp1_note_policy_owners(policy: &rp1_dtb_policy::Rp1DtbPolicy) {
+    for spec in rp1_dtb_policy::RP1_DEVICE_DTB_NODES {
+        logln!(
+            "[RP1NOTE] owner {}={}",
+            spec.name,
+            policy.owner_of(spec.bit).as_str()
+        );
     }
 }
 
