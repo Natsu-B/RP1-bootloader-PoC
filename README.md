@@ -606,6 +606,15 @@ accepted as a valid note:
 [RP1NOTE] valid: owner_rp1=0x343 owner_linux=0x3c owner_disabled=0x80 mailbox=0x1 version_kind=0
 ```
 
+RP1-hal minimal firmware smoke:
+
+- Build in `RP1-hal` with
+  `cargo run -p cargo-rp1 -- build --example minimal`.
+- Copy `RP1-hal/target/rp1/release/RP1.elf` to the TFTP root as `RP1.elf`.
+- The PoC accepts it as a valid `.note.rp1` ELF and can start RP1 proc0.
+- This minimal firmware is not a GEM firmware, so full network continuation
+  after RP1 reload is not expected.
+
 ## Known Limits
 
 - RP1 PCIe re-enumeration after firmware reload is not fully implemented in this
