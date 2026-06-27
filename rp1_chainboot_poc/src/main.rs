@@ -16,6 +16,7 @@ use dtb::DtbParser;
 
 mod bcm2712_aon;
 mod bcm2712_i2c;
+mod boot_context;
 mod boot_files;
 mod dtb_patch;
 mod gzip;
@@ -150,6 +151,11 @@ pub enum BootError {
     Rp1ConfigInvalid,
     Rp1DtbPolicyInvalid,
     Rp1DtbNodeNotFound,
+    BootModeDtbNodeMissing,
+    BootModeDtbNodeInvalid,
+    FirmwareBootedFromSdOrEmmc,
+    FirmwareBootedFromUsbMsd,
+    FirmwareBootModeUnsupported,
 }
 
 #[unsafe(no_mangle)]
@@ -173,6 +179,19 @@ fn main_flow() -> Result<(), BootError> {
 
     let dtb = DtbParser::init(placement::DTB_PTR).map_err(|_| BootError::DtbPatch)?;
     logln!("[DTB] parse ok");
+    #[cfg(feature = "tftp-boot")]
+    {
+        match boot_context::FirmwareBootContext::from_dtb(&dtb) {
+            Ok(ctx) => ctx.log(),
+            Err(err) => logln!("[BOOTCTX] unavailable: {:?}", err),
+        }
+    }
+    #[cfg(not(feature = "tftp-boot"))]
+    {
+        let boot_ctx = boot_context::FirmwareBootContext::from_dtb(&dtb)?;
+        boot_ctx.log();
+        boot_ctx.enforce_default_policy()?;
+    }
     logln!("[ALLOC] static bump allocator ok: size={} bytes", HEAP_SIZE);
 
     placement::check_no_overlap(&[

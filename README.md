@@ -155,13 +155,13 @@ replaced by another firmware source.
 ### RP1.elf note policy
 
 `/RP1.elf` may carry a `.note.rp1` boot note. The current PoC parses the note
-metadata before materializing `PT_LOAD` segments; DTB ownership patching is left
-for a later stage.
+metadata before materializing `PT_LOAD` segments and uses the owner bitmap when
+patching the Linux handoff DTB.
 
 - `.note.rp1` valid:
   - boot normally
   - log owner bitmap, mailbox flags, and firmware version kind
-  - use note metadata for future DTB ownership policy
+  - use note metadata for the DTB ownership policy
 
 - `.note.rp1` missing:
   - require `/config_rp1.txt` with `force_boot = true`
@@ -180,6 +180,37 @@ linux_pio = false
 
 `linux_pio = true` is reserved for a future RP1 PIO firmware mode and is
 currently rejected as an invalid config.
+
+### Firmware boot context policy
+
+The bootloader reads firmware-provided boot context from `/chosen/bootloader`
+in the input DTB before selecting a default-feature boot path.
+
+- `/chosen/bootloader/boot-mode` is required for default feature builds and is
+  parsed as a big-endian `u32`
+- `/chosen/bootloader/partition` is parsed as an optional big-endian `u32`
+- boot mode `1` (`sd-emmc`) is fatal in default builds:
+  `FirmwareBootedFromSdOrEmmc`
+- boot mode `4` (`usb-msd`) is fatal in default builds:
+  `FirmwareBootedFromUsbMsd`
+- boot mode `2` (`network`) is allowed in default builds
+- `rpiboot`, `nvme`, `http`, unknown, missing, or malformed boot modes are
+  rejected in default builds
+
+TFTP server IP is logged when found in one of these DTB properties:
+
+- `/chosen/bootloader/tftp`
+- `/chosen/bootloader/tftp-ip`
+- `/chosen/bootloader/tftp-server`
+- `/chosen/bootloader/server-ip`
+- `/chosen/tftp`
+- `/chosen/tftp-ip`
+- `/chosen/tftp-server`
+- `/chosen/server-ip`
+
+The IP parser accepts either a big-endian four-byte IPv4 value or an ASCII IPv4
+string with an optional trailing NUL. Missing TFTP IP is logged as
+`tftp_ip=missing` and is not fatal.
 
 ### RP1 DTB ownership policy
 
@@ -475,6 +506,28 @@ Observed UART10 results:
 - missing owner table:
   `/opt/rpi-cm5-hack/logs/20260627-015026-uart/uart10.log`
   logged `[FATAL] Rp1ConfigInvalid`
+
+### Firmware boot context hardware smoke
+
+CM5 Lite TFTP smoke testing on 2026-06-27 used TFTP root
+`/opt/rpi-cm5-hack/tftpboot`, CM5 reboot command
+`/opt/rpi-cm5-hack/scripts/cm5ctl.py force-boot`, and UART capture command
+`/opt/rpi-cm5-hack/scripts/capture-uart.sh --uart10 /dev/cm5-uart10 --analyze`.
+The test temporarily replaced `kernel_2712.img` with a default-feature
+`rp1_chainboot_poc.img` and restored it afterward from
+`/opt/rpi-cm5-hack/backups/20260627-122208-bootctx-default-retry/files/kernel_2712.img.bak`.
+
+Observed UART10 log:
+
+```text
+/opt/rpi-cm5-hack/logs/20260627-122220-uart/uart10.log
+[BOOTCTX] boot_mode=2 source=network partition=0
+[BOOTCTX] tftp_ip=missing
+```
+
+The default feature policy allowed the network boot context, then continued into
+the existing SDHC path and stopped at `SdMount` after `SDHC init failed:
+InvalidState`. No SD/eMMC or USB-MSD hardware smoke was run in this pass.
 
 ## Gzip
 
