@@ -576,6 +576,36 @@ continue after a probe read failure.
 To avoid doubling this read-side risk, `reset_into_bootrom()` performs the
 chip-id probe once and returns the result to the caller.
 
+## TFTP Client Ports
+
+The TFTP client allocates a fresh local UDP port for each RRQ, starting at
+49152. This avoids accepting stale DATA from the previous transfer when the
+server reuses timing or transfer state.
+
+Observed full-reload order:
+
+```text
+[TFTP] rrq file=RP1.elf local_port=49152
+[TFTP] rrq file=config_rp1.txt local_port=49153
+[TFTP] rrq file=__rp1_tftp_flush__ local_port=49154
+```
+
+Observed `skip-rp1-reload` order:
+
+```text
+[TFTP] rrq file=BCM2712.img local_port=49152
+[TFTP] rrq file=RP1.elf local_port=49153
+[TFTP] rrq file=config_rp1.txt local_port=49154
+[TFTP] rrq file=__rp1_tftp_flush__ local_port=49155
+```
+
+On 2026-06-27, `RP1-hal` `examples/minimal` with an attached `.note.rp1` was
+accepted as a valid note:
+
+```text
+[RP1NOTE] valid: owner_rp1=0x343 owner_linux=0x3c owner_disabled=0x80 mailbox=0x1 version_kind=0
+```
+
 ## Known Limits
 
 - RP1 PCIe re-enumeration after firmware reload is not fully implemented in this
