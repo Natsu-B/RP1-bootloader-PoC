@@ -57,20 +57,62 @@ pub fn boot_from_tftp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
 }
 
 pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
-    let gem = init_tftp_gem(dtb)?;
     let clock = TimerClock::new();
-    let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
-        crate::logln!("[DHCP] failed: {:?}", err);
-        map_dhcp_error(err)
-    })?;
-    boot_from_tftp_with_lease(dtb, &mut *gem, &clock, &lease)
+    let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
+
+    if skip_rp1_reload {
+        let gem = init_tftp_gem(dtb)?;
+        let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
+            crate::logln!("[DHCP] failed: {:?}", err);
+            map_dhcp_error(err)
+        })?;
+        let rp1_policy = download_rp1_policy_and_reload_if_needed(dtb, &mut *gem, &clock, &lease)?;
+        return boot_kernel_from_tftp_with_lease(dtb, &mut *gem, &clock, &lease, rp1_policy);
+    }
+
+    let (lease, rp1_policy) = {
+        let gem = init_tftp_gem(dtb)?;
+        let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
+            crate::logln!("[DHCP] failed: {:?}", err);
+            map_dhcp_error(err)
+        })?;
+        let rp1_policy = download_rp1_policy_and_reload_if_needed(dtb, &mut *gem, &clock, &lease)?;
+        (lease, rp1_policy)
+    };
+
+    crate::logln!("[TFTP] reinitializing GEM after RP1 reload");
+    let gem = init_tftp_gem_with_label(dtb, "post-rp1-reload")?;
+    boot_kernel_from_tftp_with_lease(dtb, &mut *gem, &clock, &lease, rp1_policy)
 }
 
-fn boot_from_tftp_with_lease(
+fn download_rp1_policy_and_reload_if_needed(
     dtb: &dtb::DtbParser,
     gem: &mut Rp1Gem,
     clock: &TimerClock,
     lease: &NetworkBootLease,
+) -> Result<Option<Rp1DtbPolicy>, BootError> {
+    if cfg!(feature = "skip-rp1-reload") {
+        crate::logln!(
+            "[RP1BOOT] defer RP1 policy load until after kernel TFTP by feature skip-rp1-reload"
+        );
+        return Ok(None);
+    }
+
+    let policy = boot_rp1_from_tftp(dtb, gem, clock, lease)?;
+    // SAFETY: the pre-reload GEM is not used after this point. The full reload
+    // path leaves this scope and obtains a fresh singleton instance before any
+    // further network I/O.
+    unsafe { gem.release_after_quiesce() };
+    crate::logln!("[TFTP] dropping pre-reload GEM state");
+    Ok(Some(policy))
+}
+
+fn boot_kernel_from_tftp_with_lease(
+    dtb: &dtb::DtbParser,
+    gem: &mut Rp1Gem,
+    clock: &TimerClock,
+    lease: &NetworkBootLease,
+    mut rp1_policy: Option<Rp1DtbPolicy>,
 ) -> Result<(), BootError> {
     crate::logln!(
         "[TFTP] config mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} local={}.{}.{}.{} server={}.{}.{}.{} kernel={} timeout_us={} retries={}",
@@ -94,23 +136,12 @@ fn boot_from_tftp_with_lease(
     );
     let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
 
-    let mut rp1_policy = None;
-    if skip_rp1_reload {
-        crate::logln!(
-            "[RP1BOOT] defer RP1 policy load until after kernel TFTP by feature skip-rp1-reload"
-        );
-    } else {
-        let policy = boot_rp1_from_tftp(dtb, gem, clock, lease)?;
-        reinit_rp1_pcie(dtb)?;
-        rp1_policy = Some(policy);
-    }
-
     let kernel_cfg = tftp_config(lease, TFTP_KERNEL_FILENAME);
     crate::logln!("[TFTP] kernel download start {}", TFTP_KERNEL_FILENAME);
     let mut kernel_staging = vec![0u8; TFTP_KERNEL_STAGING_MAX];
     let kernel_len = match tftp::download_into(gem, clock, &kernel_cfg, &mut kernel_staging) {
         Ok(len) => len,
-        Err(err) => return gem_failure(gem, "kernel download", err),
+        Err(err) => return gem_failure(gem, lease, "kernel download", err),
     };
     crate::logln!(
         "[TFTP] kernel download complete addr=0x{:x} len={}",
@@ -198,23 +229,10 @@ fn map_dhcp_error(err: DhcpError) -> BootError {
     }
 }
 
-fn reinit_rp1_pcie(dtb: &dtb::DtbParser) -> Result<(), BootError> {
-    bcm2712::init_rp1_with_options(
-        dtb,
-        bcm2712::Rp1InitOptions {
-            mode: bcm2712::Rp1InitMode::Auto,
-            strict: false,
-        },
-    )
-    .map_err(|err| {
-        crate::logln!("[TFTP] RP1 PCIe init failed: {:?}", err);
-        BootError::Rp1Pcie
-    })?;
-    crate::logln!("[TFTP] RP1 PCIe init ok");
-    Ok(())
-}
-
-fn init_tftp_gem(dtb: &dtb::DtbParser) -> Result<&'static mut Rp1Gem, BootError> {
+fn init_tftp_gem_with_label(
+    dtb: &dtb::DtbParser,
+    label: &'static str,
+) -> Result<&'static mut Rp1Gem, BootError> {
     let rp1 = bcm2712::init_rp1_with_options(
         dtb,
         bcm2712::Rp1InitOptions {
@@ -223,27 +241,65 @@ fn init_tftp_gem(dtb: &dtb::DtbParser) -> Result<&'static mut Rp1Gem, BootError>
         },
     )
     .map_err(|err| {
-        crate::logln!("[TFTP] RP1 PCIe init failed: {:?}", err);
+        if label.is_empty() {
+            crate::logln!("[TFTP] RP1 PCIe init failed: {:?}", err);
+        } else {
+            crate::logln!("[TFTP] {} RP1 PCIe init failed: {:?}", label, err);
+        }
         BootError::Rp1Pcie
     })?;
-    crate::logln!("[TFTP] RP1 PCIe init ok");
+    if label.is_empty() {
+        crate::logln!("[TFTP] RP1 PCIe init ok");
+    } else {
+        crate::logln!("[TFTP] {} RP1 PCIe init ok", label);
+    }
 
     let gem = Rp1Gem::init_from_rp1_config(&rp1, TFTP_LOCAL_MAC, Rp1GemOptions::default())
         .map_err(|err| {
-            crate::logln!("[TFTP] Rp1Gem init failed: {:?}", err);
+            if label.is_empty() {
+                crate::logln!("[TFTP] Rp1Gem init failed: {:?}", err);
+            } else {
+                crate::logln!("[TFTP] {} Rp1Gem init failed: {:?}", label, err);
+            }
             BootError::Rp1Gem
         })?;
-    crate::logln!("[TFTP] Rp1Gem init ok phy={}", gem.phy_address());
+    if label.is_empty() {
+        crate::logln!("[TFTP] Rp1Gem init ok phy={}", gem.phy_address());
+    } else {
+        crate::logln!("[TFTP] {} Rp1Gem init ok phy={}", label, gem.phy_address());
+    }
     match gem.link_state() {
-        Ok(link) => crate::logln!(
-            "[TFTP] link up={} speed={:?} full_duplex={}",
-            link.up,
-            link.speed,
-            link.full_duplex
-        ),
-        Err(err) => crate::logln!("[TFTP] link query failed: {:?}", err),
+        Ok(link) => {
+            if label.is_empty() {
+                crate::logln!(
+                    "[TFTP] link up={} speed={:?} full_duplex={}",
+                    link.up,
+                    link.speed,
+                    link.full_duplex
+                );
+            } else {
+                crate::logln!(
+                    "[TFTP] {} link up={} speed={:?} full_duplex={}",
+                    label,
+                    link.up,
+                    link.speed,
+                    link.full_duplex
+                );
+            }
+        }
+        Err(err) => {
+            if label.is_empty() {
+                crate::logln!("[TFTP] link query failed: {:?}", err);
+            } else {
+                crate::logln!("[TFTP] {} link query failed: {:?}", label, err);
+            }
+        }
     }
     Ok(gem)
+}
+
+fn init_tftp_gem(dtb: &dtb::DtbParser) -> Result<&'static mut Rp1Gem, BootError> {
+    init_tftp_gem_with_label(dtb, "")
 }
 
 fn boot_rp1_from_tftp(
@@ -332,7 +388,7 @@ fn download_initramfs(
         ),
     ) {
         Ok(len) => len,
-        Err(err) => return gem_failure(gem, "initramfs download", err),
+        Err(err) => return gem_failure(gem, lease, "initramfs download", err),
     };
     crate::logln!(
         "[TFTP] initramfs download complete addr=0x{:x} len={}",
@@ -366,7 +422,7 @@ fn download_tftp_required(
     let mut staging = vec![0u8; max_len];
     let len = match tftp::download_into(gem, clock, &config, &mut staging) {
         Ok(len) => len,
-        Err(err) => return gem_failure(gem, filename, err),
+        Err(err) => return gem_failure(gem, lease, filename, err),
     };
     staging.truncate(len);
     Ok(staging)
@@ -389,7 +445,7 @@ fn download_tftp_optional(
             crate::logln!("[TFTP] optional {} not found", filename);
             return Ok(None);
         }
-        Err(err) => return gem_failure(gem, filename, err),
+        Err(err) => return gem_failure(gem, lease, filename, err),
     };
     staging.truncate(len);
     crate::logln!("[TFTP] optional {} found len={}", filename, len);
@@ -436,10 +492,23 @@ fn drain_rx(gem: &mut Rp1Gem, clock: &TimerClock, duration_us: u64) {
 
 fn gem_failure<T>(
     gem: &mut Rp1Gem,
+    lease: &NetworkBootLease,
     stage: &'static str,
     err: tftp::TftpError,
 ) -> Result<T, BootError> {
     crate::logln!("[TFTP] {} failed: {:?}", stage, err);
+    crate::logln!(
+        "[TFTP] lease client={}.{}.{}.{} server={}.{}.{}.{} source={}",
+        lease.client_ip[0],
+        lease.client_ip[1],
+        lease.client_ip[2],
+        lease.client_ip[3],
+        lease.tftp_server_ip[0],
+        lease.tftp_server_ip[1],
+        lease.tftp_server_ip[2],
+        lease.tftp_server_ip[3],
+        lease.tftp_server_source.as_str()
+    );
     crate::logln!("[TFTP] Rp1Gem diagnostic: {:?}", gem.diagnostic_snapshot());
     crate::logln!("[TFTP] Rp1Gem last error: {:?}", gem.take_last_error());
     Err(BootError::Tftp)

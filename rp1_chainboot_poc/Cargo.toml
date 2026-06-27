@@ -16,17 +16,17 @@ log-uart = []
 log-semihosting = []
 
 [dependencies]
-arch_hal = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "arch_hal" }
-dtb = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "dtb" }
-file = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "file" }
-filesystem = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "filesystem" }
-block-device-api = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "block-device-api" }
-allocator = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "allocator", features = ["no-alloc-error-handler"] }
-mutex = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "mutex" }
-arch_timer = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "timer" }
-io-api = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "io-api" }
-net = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "net" }
-elf = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "8805df02687184bfc0e722c9423ad925f02a18f9", package = "elf" }
+arch_hal = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "arch_hal" }
+dtb = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "dtb" }
+file = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "file" }
+filesystem = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "filesystem" }
+block-device-api = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "block-device-api" }
+allocator = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "allocator", features = ["no-alloc-error-handler"] }
+mutex = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "mutex" }
+arch_timer = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "timer" }
+io-api = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "io-api" }
+net = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "net" }
+elf = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "c166eb612739f1ca3d928c70121de3a245f9d84d", package = "elf" }
 
 embedded-hal = { version = "1", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"] }
