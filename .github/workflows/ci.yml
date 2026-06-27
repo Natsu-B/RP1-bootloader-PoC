@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Format and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout bootloader
+        uses: actions/checkout@v7
+        with:
+          path: RP1-bootloader-PoC
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check formatting
+        working-directory: RP1-bootloader-PoC
+        run: nix develop --command cargo fmt --all -- --check
+
+      - name: Build bootloader variants
+        working-directory: RP1-bootloader-PoC
+        run: |
+          nix develop --command bash -euxo pipefail -c '
+            cargo xbuild
+            mkdir -p ci-artifacts/default
+            cp -a bin/. ci-artifacts/default/
+
+            cargo xbuild --features tftp-boot
+            mkdir -p ci-artifacts/tftp-boot
+            cp -a bin/. ci-artifacts/tftp-boot/
+
+            cargo xbuild --no-default-features --features "allow-fw-parts-fallback log-semihosting"
+            mkdir -p ci-artifacts/semihosting
+            cp -a bin/. ci-artifacts/semihosting/
+          '
+
+      - name: Upload images
+        uses: actions/upload-artifact@v7
+        with:
+          name: rp1-chainboot-poc-images
+          path: RP1-bootloader-PoC/ci-artifacts/
+          if-no-files-found: error
+          retention-days: 14
