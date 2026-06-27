@@ -1,13 +1,10 @@
 use dtb::{DeviceTree, DeviceTreeQueryExt, NodeQueryExt};
-use net::Ipv4Addr;
 
 use crate::BootError;
 
 pub struct FirmwareBootContext {
     pub boot_mode: FirmwareBootMode,
     pub boot_partition: Option<u32>,
-    pub tftp_ip: Option<Ipv4Addr>,
-    pub tftp_ip_source: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,13 +36,10 @@ impl FirmwareBootContext {
                 .property("partition")
                 .map(|prop| prop.value.as_slice()),
         );
-        let (tftp_ip, tftp_ip_source) = find_tftp_ip(&tree);
 
         Ok(Self {
             boot_mode,
             boot_partition,
-            tftp_ip,
-            tftp_ip_source,
         })
     }
 
@@ -56,17 +50,6 @@ impl FirmwareBootContext {
             self.boot_mode.as_str(),
             OptionalU32(self.boot_partition)
         );
-        match (self.tftp_ip, self.tftp_ip_source) {
-            (Some(ip), Some(source)) => crate::logln!(
-                "[BOOTCTX] tftp_ip={}.{}.{}.{} source={}",
-                ip[0],
-                ip[1],
-                ip[2],
-                ip[3],
-                source
-            ),
-            _ => crate::logln!("[BOOTCTX] tftp_ip=missing"),
-        }
     }
 
     pub fn enforce_default_policy(&self) -> Result<(), BootError> {
@@ -132,76 +115,6 @@ impl FirmwareBootMode {
     }
 }
 
-struct TftpIpCandidate {
-    node_path: &'static str,
-    property: &'static str,
-    source: &'static str,
-}
-
-const TFTP_IP_CANDIDATES: &[TftpIpCandidate] = &[
-    TftpIpCandidate {
-        node_path: "/chosen/bootloader",
-        property: "tftp",
-        source: "/chosen/bootloader/tftp",
-    },
-    TftpIpCandidate {
-        node_path: "/chosen/bootloader",
-        property: "tftp-ip",
-        source: "/chosen/bootloader/tftp-ip",
-    },
-    TftpIpCandidate {
-        node_path: "/chosen/bootloader",
-        property: "tftp-server",
-        source: "/chosen/bootloader/tftp-server",
-    },
-    TftpIpCandidate {
-        node_path: "/chosen/bootloader",
-        property: "server-ip",
-        source: "/chosen/bootloader/server-ip",
-    },
-    TftpIpCandidate {
-        node_path: "/chosen",
-        property: "tftp",
-        source: "/chosen/tftp",
-    },
-    TftpIpCandidate {
-        node_path: "/chosen",
-        property: "tftp-ip",
-        source: "/chosen/tftp-ip",
-    },
-    TftpIpCandidate {
-        node_path: "/chosen",
-        property: "tftp-server",
-        source: "/chosen/tftp-server",
-    },
-    TftpIpCandidate {
-        node_path: "/chosen",
-        property: "server-ip",
-        source: "/chosen/server-ip",
-    },
-];
-
-fn find_tftp_ip(tree: &DeviceTree<'_, dtb::Borrowed>) -> (Option<Ipv4Addr>, Option<&'static str>) {
-    for candidate in TFTP_IP_CANDIDATES {
-        let Some(node) = tree
-            .find_node_by_path(candidate.node_path)
-            .and_then(|id| tree.node(id))
-        else {
-            continue;
-        };
-        let Some(bytes) = node
-            .property(candidate.property)
-            .map(|prop| prop.value.as_slice())
-        else {
-            continue;
-        };
-        if let Some(ip) = parse_tftp_ip_prop(bytes) {
-            return (Some(ip), Some(candidate.source));
-        }
-    }
-    (None, None)
-}
-
 fn parse_boot_mode_prop(bytes: Option<&[u8]>) -> Result<FirmwareBootMode, BootError> {
     let Some(bytes) = bytes else {
         return Err(BootError::BootModeDtbNodeMissing);
@@ -216,70 +129,9 @@ fn parse_optional_be_u32_prop(bytes: Option<&[u8]>) -> Option<u32> {
     parse_be_u32_prefix(bytes?)
 }
 
-fn parse_tftp_ip_prop(bytes: &[u8]) -> Option<Ipv4Addr> {
-    parse_ascii_ipv4(bytes).or_else(|| {
-        if bytes.len() == 4 {
-            Some([bytes[0], bytes[1], bytes[2], bytes[3]])
-        } else {
-            None
-        }
-    })
-}
-
 fn parse_be_u32_prefix(bytes: &[u8]) -> Option<u32> {
     let bytes = bytes.get(..4)?;
     Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn parse_ascii_ipv4(bytes: &[u8]) -> Option<Ipv4Addr> {
-    let bytes = trim_ascii_nul_space(bytes);
-    if bytes.is_empty() {
-        return None;
-    }
-
-    let mut octets = [0u8; 4];
-    let mut idx = 0usize;
-    let mut value = 0u16;
-    let mut saw_digit = false;
-
-    for &b in bytes {
-        match b {
-            b'0'..=b'9' => {
-                saw_digit = true;
-                value = value.checked_mul(10)?.checked_add(u16::from(b - b'0'))?;
-                if value > u16::from(u8::MAX) {
-                    return None;
-                }
-            }
-            b'.' => {
-                if !saw_digit || idx >= 3 {
-                    return None;
-                }
-                octets[idx] = value as u8;
-                idx += 1;
-                value = 0;
-                saw_digit = false;
-            }
-            _ => return None,
-        }
-    }
-
-    if !saw_digit || idx != 3 {
-        return None;
-    }
-    octets[idx] = value as u8;
-    Some(octets)
-}
-
-fn trim_ascii_nul_space(mut bytes: &[u8]) -> &[u8] {
-    while let Some((&last, rest)) = bytes.split_last() {
-        if last == 0 || last == b' ' || last == b'\n' || last == b'\r' || last == b'\t' {
-            bytes = rest;
-        } else {
-            break;
-        }
-    }
-    bytes
 }
 
 struct OptionalU32(Option<u32>);
@@ -322,27 +174,5 @@ mod tests {
             parse_boot_mode_prop(Some(&[0, 0, 0])),
             Err(BootError::BootModeDtbNodeInvalid)
         );
-    }
-
-    #[test]
-    fn parses_ascii_tftp_ip() {
-        assert_eq!(
-            parse_tftp_ip_prop(b"192.168.1.10\0"),
-            Some([192, 168, 1, 10])
-        );
-    }
-
-    #[test]
-    fn parses_big_endian_u32_tftp_ip() {
-        assert_eq!(
-            parse_tftp_ip_prop(&[192, 168, 50, 1]),
-            Some([192, 168, 50, 1])
-        );
-    }
-
-    #[test]
-    fn invalid_tftp_ip_is_none() {
-        assert_eq!(parse_tftp_ip_prop(b"not-an-ip"), None);
-        assert_eq!(parse_tftp_ip_prop(&[1, 2, 3]), None);
     }
 }

@@ -193,24 +193,22 @@ in the input DTB before selecting a default-feature boot path.
   `FirmwareBootedFromSdOrEmmc`
 - boot mode `4` (`usb-msd`) is fatal in default builds:
   `FirmwareBootedFromUsbMsd`
-- boot mode `2` (`network`) is allowed in default builds
+- boot mode `2` (`network`) is allowed in default builds and enters the
+  DHCP/TFTP network boot path
 - `rpiboot`, `nvme`, `http`, unknown, missing, or malformed boot modes are
   rejected in default builds
 
-TFTP server IP is logged when found in one of these DTB properties:
+Network boot does not expect a TFTP server IP handoff in the DTB. The
+bootloader reruns DHCP through RP1 GEM and selects the TFTP server in VPU
+bootloader-compatible priority order:
 
-- `/chosen/bootloader/tftp`
-- `/chosen/bootloader/tftp-ip`
-- `/chosen/bootloader/tftp-server`
-- `/chosen/bootloader/server-ip`
-- `/chosen/tftp`
-- `/chosen/tftp-ip`
-- `/chosen/tftp-server`
-- `/chosen/server-ip`
+1. DHCP option 66, when it is an ASCII IPv4 address
+2. BOOTP/DHCP `siaddr`
+3. DHCP option 54 server identifier
+4. DHCP reply source IP
 
-The IP parser accepts either a big-endian four-byte IPv4 value or an ASCII IPv4
-string with an optional trailing NUL. Missing TFTP IP is logged as
-`tftp_ip=missing` and is not fatal.
+Default-feature network boot does not fall back to SDHC. If the firmware boot
+source is network, SDHC init is not attempted.
 
 ### RP1 DTB ownership policy
 
@@ -401,24 +399,25 @@ crate build script emits a warning pointing users at `cargo xbuild` and
 
 ## TFTP boot
 
-The `tftp-boot` feature is an alternate boot source. It leaves the SDHC path
-unchanged when disabled, but when enabled it initializes RP1 PCIe in `Auto`
-mode, initializes `Rp1Gem`, resolves the configured server with ARP, downloads
-`RP1.elf` and optional `config_rp1.txt` from the TFTP root, applies the
-`.note.rp1` policy, reloads RP1 through the existing I2C bootstrap path,
-downloads `BCM2712.img` through the reusable `net::tftp::download_into` client,
-stages and decompresses it when necessary, validates the arm64 Image, patches
-the DTB, quiesces GEM, cleans the handoff ranges, and enters the existing EL2
-handoff path. The TFTP boot path does not require SDHC to be present. It never
-continues after a failed or partial RP1 ELF or kernel download.
+The default build enters the TFTP boot path when the firmware DTB reports
+`/chosen/bootloader/boot-mode = 2`. The `tftp-boot` feature also enters this
+same transport path directly. In both cases, the bootloader initializes RP1 PCIe
+in `Auto` mode, initializes `Rp1Gem`, reruns DHCP, resolves the selected TFTP
+server with ARP, downloads `RP1.elf` and optional `config_rp1.txt` from the TFTP
+root, applies the `.note.rp1` policy, reloads RP1 through the existing I2C
+bootstrap path, downloads `BCM2712.img` through the reusable
+`net::tftp::download_into` client, stages and decompresses it when necessary,
+validates the arm64 Image, patches the DTB, quiesces GEM, cleans the handoff
+ranges, and enters the existing EL2 handoff path. The TFTP boot path does not
+require SDHC to be present. It never continues after a failed or partial RP1 ELF
+or kernel download.
 
-Network constants are intentionally kept at the top of
-`rp1_chainboot_poc/src/net_boot.rs`. The current lab defaults are local
-`192.168.50.25`, server `192.168.50.1`, RP1 filename `RP1.elf`, RP1 config
-filename `config_rp1.txt`, and kernel filename `BCM2712.img`. Update these
-values together for a different direct Ethernet network. The optional
-`tftp-initramfs` feature additionally downloads `initramfs_2712` into the
-existing initramfs placement range.
+The current lab MAC address used to initialize `Rp1Gem` is kept at the top of
+`rp1_chainboot_poc/src/net_boot.rs`. Client IP and TFTP server IP are not fixed
+constants; they come from DHCP. RP1 filename `RP1.elf`, RP1 config filename
+`config_rp1.txt`, and kernel filename `BCM2712.img` remain fixed filenames.
+The optional `tftp-initramfs` feature additionally downloads `initramfs_2712`
+into the existing initramfs placement range.
 
 Build with the repository's nightly toolchain:
 
@@ -507,27 +506,35 @@ Observed UART10 results:
   `/opt/rpi-cm5-hack/logs/20260627-015026-uart/uart10.log`
   logged `[FATAL] Rp1ConfigInvalid`
 
-### Firmware boot context hardware smoke
+### DHCP network boot hardware smoke
 
 CM5 Lite TFTP smoke testing on 2026-06-27 used TFTP root
 `/opt/rpi-cm5-hack/tftpboot`, CM5 reboot command
 `/opt/rpi-cm5-hack/scripts/cm5ctl.py force-boot`, and UART capture command
 `/opt/rpi-cm5-hack/scripts/capture-uart.sh --uart10 /dev/cm5-uart10 --analyze`.
 The test temporarily replaced `kernel_2712.img` with a default-feature
-`rp1_chainboot_poc.img` and restored it afterward from
-`/opt/rpi-cm5-hack/backups/20260627-122208-bootctx-default-retry/files/kernel_2712.img.bak`.
+`rp1_chainboot_poc.img`, added `BCM2712.img` from the original kernel image,
+and added a valid-note test `RP1.elf`. It restored the original TFTP root
+afterward from `/opt/rpi-cm5-hack/backups/20260627-124509-dhcp-netboot/`.
 
 Observed UART10 log:
 
 ```text
-/opt/rpi-cm5-hack/logs/20260627-122220-uart/uart10.log
+/opt/rpi-cm5-hack/logs/20260627-124536-uart/uart10.log
 [BOOTCTX] boot_mode=2 source=network partition=0
-[BOOTCTX] tftp_ip=missing
+[NETBOOT] DHCP start
+[DHCP] discover xid=0x3592ab59
+[DHCP] offer yiaddr=192.168.50.25 siaddr=192.168.50.1 server_id=192.168.50.1 opt66=missing src=192.168.50.1
+[DHCP] ack yiaddr=192.168.50.25 siaddr=192.168.50.1 server_id=192.168.50.1 opt66=missing src=192.168.50.1
+[NETBOOT] client_ip=192.168.50.25 subnet=255.255.255.0 router=192.168.50.1
+[NETBOOT] selected_tftp=192.168.50.1 source=dhcp-siaddr
+[TFTP] kernel download start BCM2712.img
 ```
 
-The default feature policy allowed the network boot context, then continued into
-the existing SDHC path and stopped at `SdMount` after `SDHC init failed:
-InvalidState`. No SD/eMMC or USB-MSD hardware smoke was run in this pass.
+The log did not contain the old DTB TFTP-IP `tftp_ip=missing` line and did not
+enter `[SDHC] init begin`. The run stopped after `kernel download start` with
+`TransmitFailed`, because the smoke `RP1.elf` is a tiny test image and not a
+real GEM firmware. No SD/eMMC or USB-MSD hardware smoke was run in that pass.
 
 ## Gzip
 

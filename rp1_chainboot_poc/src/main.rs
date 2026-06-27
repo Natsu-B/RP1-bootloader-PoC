@@ -18,10 +18,10 @@ mod bcm2712_aon;
 mod bcm2712_i2c;
 mod boot_context;
 mod boot_files;
+mod dhcp_boot;
 mod dtb_patch;
 mod gzip;
 mod linux;
-#[cfg(feature = "tftp-boot")]
 mod net_boot;
 mod panic;
 mod placement;
@@ -151,6 +151,10 @@ pub enum BootError {
     Rp1ConfigInvalid,
     Rp1DtbPolicyInvalid,
     Rp1DtbNodeNotFound,
+    Dhcp,
+    DhcpTimeout,
+    DhcpInvalidPacket,
+    DhcpNoTftpServer,
     BootModeDtbNodeMissing,
     BootModeDtbNodeInvalid,
     FirmwareBootedFromSdOrEmmc,
@@ -187,11 +191,12 @@ fn main_flow() -> Result<(), BootError> {
         }
     }
     #[cfg(not(feature = "tftp-boot"))]
-    {
+    let default_boot_ctx = {
         let boot_ctx = boot_context::FirmwareBootContext::from_dtb(&dtb)?;
         boot_ctx.log();
         boot_ctx.enforce_default_policy()?;
-    }
+        boot_ctx
+    };
     logln!("[ALLOC] static bump allocator ok: size={} bytes", HEAP_SIZE);
 
     placement::check_no_overlap(&[
@@ -219,6 +224,13 @@ fn main_flow() -> Result<(), BootError> {
             placement::RP1_IMG_SCRATCH_MAX,
         ),
     ])?;
+
+    #[cfg(not(feature = "tftp-boot"))]
+    {
+        if default_boot_ctx.boot_mode == boot_context::FirmwareBootMode::Network {
+            return net_boot::boot_from_tftp_with_dhcp(&dtb);
+        }
+    }
 
     #[cfg(feature = "tftp-boot")]
     {
