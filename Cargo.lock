@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "aarch64_gdb"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "aarch64_mutex",
  "cpu",
@@ -18,7 +18,7 @@ dependencies = [
 [[package]]
 name = "aarch64_hal"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "aarch64_gdb",
  "aarch64_mutex",
@@ -37,7 +37,7 @@ dependencies = [
 [[package]]
 name = "aarch64_mutex"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "cpu",
  "mutex",
@@ -52,7 +52,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "allocator"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "intrusive_linked_list",
  "mutex",
@@ -62,7 +62,7 @@ dependencies = [
 [[package]]
 name = "arch_hal"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "aarch64_hal",
 ]
@@ -70,7 +70,7 @@ dependencies = [
 [[package]]
 name = "block-device"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "allocator",
  "block-device-api",
@@ -84,7 +84,7 @@ dependencies = [
 [[package]]
 name = "block-device-api"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "io-api",
 ]
@@ -98,12 +98,12 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "common"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 
 [[package]]
 name = "cpu"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "typestate",
  "typestate_macro",
@@ -127,7 +127,7 @@ checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 [[package]]
 name = "dtb"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "allocator",
  "common",
@@ -137,7 +137,7 @@ dependencies = [
 [[package]]
 name = "elf"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "typestate",
  "typestate_macro",
@@ -162,7 +162,7 @@ dependencies = [
 [[package]]
 name = "exceptions"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "common",
  "cpu",
@@ -175,7 +175,7 @@ dependencies = [
 [[package]]
 name = "file"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "allocator",
  "block-device",
@@ -189,7 +189,7 @@ dependencies = [
 [[package]]
 name = "filesystem"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "allocator",
  "block-device-api",
@@ -201,7 +201,7 @@ dependencies = [
 [[package]]
 name = "gdb_remote"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "io-api",
 ]
@@ -209,7 +209,7 @@ dependencies = [
 [[package]]
 name = "gic"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "aarch64_mutex",
  "common",
@@ -223,12 +223,12 @@ dependencies = [
 [[package]]
 name = "intrusive_linked_list"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 
 [[package]]
 name = "io-api"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 
 [[package]]
 name = "miniz_oxide"
@@ -242,7 +242,7 @@ dependencies = [
 [[package]]
 name = "mutex"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "typestate",
 ]
@@ -250,7 +250,7 @@ dependencies = [
 [[package]]
 name = "net"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "io-api",
 ]
@@ -258,7 +258,7 @@ dependencies = [
 [[package]]
 name = "paging"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "allocator",
  "common",
@@ -270,7 +270,7 @@ dependencies = [
 [[package]]
 name = "pci"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "typestate",
  "typestate_macro",
@@ -279,7 +279,7 @@ dependencies = [
 [[package]]
 name = "print"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "io-api",
  "mutex",
@@ -299,7 +299,7 @@ dependencies = [
 [[package]]
 name = "psci"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "cpu",
  "print",
@@ -343,7 +343,7 @@ dependencies = [
 [[package]]
 name = "soc"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "common",
  "cpu",
@@ -371,7 +371,7 @@ dependencies = [
 [[package]]
 name = "timer"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "cpu",
 ]
@@ -379,7 +379,7 @@ dependencies = [
 [[package]]
 name = "tls"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "cpu",
  "mutex",
@@ -388,12 +388,12 @@ dependencies = [
 [[package]]
 name = "typestate"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 
 [[package]]
 name = "typestate_macro"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -409,7 +409,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 [[package]]
 name = "virtio"
 version = "0.1.0"
-source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=c166eb612739f1ca3d928c70121de3a245f9d84d#c166eb612739f1ca3d928c70121de3a245f9d84d"
+source = "git+https://github.com/Natsu-B/aarch64_type1_hypervisor.git?rev=d3811774c2e5bdfddf7a25732ccfb09ec351d48c#d3811774c2e5bdfddf7a25732ccfb09ec351d48c"
 dependencies = [
  "allocator",
  "cpu",
