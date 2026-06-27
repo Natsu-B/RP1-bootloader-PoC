@@ -317,6 +317,7 @@ dependencies = [
 [[package]]
 name = "rp1-abi"
 version = "0.1.0"
+source = "git+https://github.com/Natsu-B/RP1-hal.git?rev=4026fdc478e932fdbd4a0520ef4c364871acbaea#4026fdc478e932fdbd4a0520ef4c364871acbaea"
 
 [[package]]
 name = "rp1_chainboot_poc"
