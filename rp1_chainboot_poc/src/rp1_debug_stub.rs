@@ -11,8 +11,13 @@ const OFF_ARG0: u32 = 36;
 const OFF_ARG1: u32 = 40;
 const OFF_STATUS: u32 = 44;
 const OFF_REGS: u32 = 48;
-const OFF_DATA_LEN: u32 = 120;
 const OFF_DATA: u32 = 124;
+
+const UART_BASE: usize = 0x10_7d00_1000;
+const UART_DR: usize = 0x00;
+const UART_FR: usize = 0x18;
+const UART_FR_RXFE: u32 = 1 << 4;
+const UART_FR_TXFF: u32 = 1 << 5;
 
 pub fn serve<I2C>(bootstrap: &mut Rp1Bootstrap<I2C>) -> !
 where
@@ -55,7 +60,10 @@ where
     }
 
     fn handle_packet(&mut self, len: usize) {
-        let packet = &self.packet[..len];
+        let mut packet_copy = [0u8; PACKET_BUF_LEN];
+        packet_copy[..len].copy_from_slice(&self.packet[..len]);
+        let packet = &packet_copy[..len];
+
         if packet == b"?" {
             self.send_packet(b"S05");
         } else if packet.starts_with(b"qSupported") {
@@ -67,7 +75,7 @@ where
         } else if packet.starts_with(b"M") {
             self.handle_write_mem(packet);
         } else if packet == b"c" || packet == b"s" {
-            self.command_no_payload(debug::command::CONTINUE);
+            let _ = self.command_no_payload(debug::command::CONTINUE);
             self.send_packet(b"S05");
         } else if packet == b"D" || packet == b"k" {
             self.send_packet(b"OK");
@@ -131,8 +139,7 @@ where
         for b in &data[..len] {
             pos = push_hex_byte(&mut self.reply, pos, *b);
         }
-        let len = pos;
-        self.send_packet_from_reply(len);
+        self.send_packet_from_reply(pos);
     }
 
     fn handle_write_mem(&mut self, packet: &[u8]) {
@@ -277,11 +284,11 @@ where
     }
 
     fn send_byte(&self, b: u8) {
-        crate::uart::putc_raw(b);
+        uart_putc_raw(b);
     }
 
     fn recv_byte(&self) -> u8 {
-        crate::uart::getc_raw()
+        uart_getc_raw()
     }
 }
 
@@ -331,4 +338,25 @@ fn push_hex_byte(out: &mut [u8], pos: usize, byte: u8) -> usize {
 
 fn find_byte(input: &[u8], needle: u8) -> Option<usize> {
     input.iter().position(|b| *b == needle)
+}
+
+fn uart_getc_raw() -> u8 {
+    loop {
+        if (uart_read32(UART_FR) & UART_FR_RXFE) == 0 {
+            return uart_read32(UART_DR) as u8;
+        }
+    }
+}
+
+fn uart_putc_raw(b: u8) {
+    while (uart_read32(UART_FR) & UART_FR_TXFF) != 0 {}
+    uart_write32(UART_DR, u32::from(b));
+}
+
+fn uart_read32(off: usize) -> u32 {
+    unsafe { core::ptr::read_volatile((UART_BASE + off) as *const u32) }
+}
+
+fn uart_write32(off: usize, value: u32) {
+    unsafe { core::ptr::write_volatile((UART_BASE + off) as *mut u32, value) }
 }
