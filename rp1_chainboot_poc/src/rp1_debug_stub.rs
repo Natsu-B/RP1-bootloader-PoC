@@ -10,7 +10,6 @@ const OFF_COMMAND: u32 = 32;
 const OFF_ARG0: u32 = 36;
 const OFF_ARG1: u32 = 40;
 const OFF_STATUS: u32 = 44;
-const OFF_REGS: u32 = 48;
 const OFF_DATA: u32 = 124;
 
 const UART_BASE: usize = 0x10_7d00_1000;
@@ -89,23 +88,18 @@ where
     }
 
     fn handle_read_regs(&mut self) {
-        if self.command_no_payload(debug::command::GET_REGS).is_err() {
-            self.send_packet(b"E01");
-            return;
+        let mut regs = [0u8; 17 * 4];
+        let mut vector = [0u8; 8];
+        if self.read_mem32(0x2000_0000, &mut vector).is_ok() {
+            regs[13 * 4..13 * 4 + 4].copy_from_slice(&vector[0..4]);
+            regs[15 * 4..15 * 4 + 4].copy_from_slice(&vector[4..8]);
         }
 
-        let mut regs = [0u8; debug::MAILBOX_REG_COUNT * 4];
-        if self.read_mem32(debug::MAILBOX_ADDR + OFF_REGS, &mut regs).is_err() {
-            self.send_packet(b"E02");
-            return;
-        }
-
-        let mut out = [0u8; 17 * 8];
         let mut pos = 0;
-        for b in &regs[..17 * 4] {
-            pos = push_hex_byte(&mut out, pos, *b);
+        for b in &regs {
+            pos = push_hex_byte(&mut self.reply, pos, *b);
         }
-        self.send_packet(&out[..pos]);
+        self.send_packet_from_reply(pos);
     }
 
     fn handle_read_mem(&mut self, packet: &[u8]) {
@@ -115,6 +109,20 @@ where
         };
         if len > MAX_GDB_MEM || len * 2 > self.reply.len() {
             self.send_packet(b"E22");
+            return;
+        }
+
+        if addr >= debug::MAILBOX_ADDR && addr.saturating_add(len as u32) <= debug::MAILBOX_ADDR + debug::MAILBOX_SIZE as u32 {
+            let mut data = [0u8; MAX_GDB_MEM];
+            if self.read_mem32(addr, &mut data[..len]).is_err() {
+                self.send_packet(b"E02");
+                return;
+            }
+            let mut pos = 0usize;
+            for b in &data[..len] {
+                pos = push_hex_byte(&mut self.reply, pos, *b);
+            }
+            self.send_packet_from_reply(pos);
             return;
         }
 
@@ -167,8 +175,10 @@ where
             || self.write_u32(OFF_ARG1, len as u32).is_err()
             || self.command_no_payload(debug::command::WRITE_MEM).is_err()
         {
-            self.send_packet(b"E01");
-            return;
+            if self.write_mem32(addr, &data[..len]).is_err() {
+                self.send_packet(b"E01");
+                return;
+            }
         }
 
         self.send_packet(b"OK");
