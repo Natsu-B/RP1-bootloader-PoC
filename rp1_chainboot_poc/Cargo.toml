@@ -12,6 +12,7 @@ skip-rp1-reload = []
 continue-on-rp1-bootstrap-failure = []
 tftp-boot = []
 tftp-initramfs = ["tftp-boot"]
+rp1-gdb-debug-stub = ["log-uart"]
 log-uart = []
 log-semihosting = []
 
@@ -32,4 +33,4 @@ embedded-hal = { version = "1", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"] }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 crc32fast = { version = "1", default-features = false }
-rp1-abi = { git = "https://github.com/Natsu-B/RP1-hal.git", rev = "4026fdc478e932fdbd4a0520ef4c364871acbaea", package = "rp1-abi" }
+rp1-abi = { git = "https://github.com/Natsu-B/RP1-hal.git", branch = "codex/rp1-debug-stub", package = "rp1-abi" }
