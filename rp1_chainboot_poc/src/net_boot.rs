@@ -19,6 +19,9 @@ use crate::placement;
 use crate::rp1_dtb_policy::Rp1DtbPolicy;
 
 const TFTP_LOCAL_MAC: MacAddr = MacAddr([0x2c, 0xcf, 0x67, 0xc2, 0x9a, 0x58]);
+#[cfg(feature = "rp1-linux-observe-failure")]
+const TFTP_KERNEL_FILENAME: &str = "linux_2712.img";
+#[cfg(not(feature = "rp1-linux-observe-failure"))]
 const TFTP_KERNEL_FILENAME: &str = "BCM2712.img";
 const TFTP_RP1_ELF_FILENAME: &str = "RP1.elf";
 const TFTP_RP1_CONFIG_FILENAME: &str = "config_rp1.txt";
@@ -83,6 +86,42 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
     let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
     let mut ports = TftpSessionPorts::new();
 
+    if cfg!(feature = "rp1-linux-observe-failure") && !skip_rp1_reload {
+        let gem = init_tftp_gem(dtb)?;
+        let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
+            crate::logln!("[DHCP] failed: {:?}", err);
+            map_dhcp_error(err)
+        })?;
+        let (kernel_base, image) =
+            download_kernel_image_from_tftp(&mut *gem, &clock, &lease, &mut ports)?;
+        #[cfg(feature = "tftp-initramfs")]
+        let initramfs_len = download_initramfs(&mut *gem, &clock, &lease, &mut ports)?;
+        #[cfg(not(feature = "tftp-initramfs"))]
+        let initramfs_len = {
+            crate::logln!("[TFTP] initramfs disabled; patching an empty initrd range");
+            0
+        };
+        let initrd_start = if initramfs_len == 0 {
+            0
+        } else {
+            placement::INITRAMFS_LOAD_BASE
+        };
+        let initrd_end = initrd_start
+            .checked_add(initramfs_len)
+            .ok_or(BootError::AddressOverflow)?;
+        let rp1_policy =
+            download_rp1_policy_and_reload_if_needed(dtb, &mut *gem, &clock, &lease, &mut ports)?;
+        wait_for_post_reload_rp1(dtb)?;
+        return handoff_preloaded_kernel(
+            dtb,
+            kernel_base,
+            image,
+            initrd_start,
+            initrd_end,
+            rp1_policy.as_ref(),
+        );
+    }
+
     if skip_rp1_reload {
         let gem = init_tftp_gem(dtb)?;
         let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
@@ -126,13 +165,7 @@ fn download_rp1_policy_and_reload_if_needed(
         return Ok(None);
     }
 
-    let policy = boot_rp1_from_tftp(dtb, gem, clock, lease, ports)?;
-    // SAFETY: the pre-reload GEM is not used after this point. The full reload
-    // path leaves this scope and obtains a fresh singleton instance before any
-    // further network I/O.
-    unsafe { gem.release_after_quiesce() };
-    crate::logln!("[TFTP] dropping pre-reload GEM state");
-    Ok(Some(policy))
+    boot_rp1_from_tftp(dtb, gem, clock, lease, ports).map(Some)
 }
 
 fn boot_kernel_from_tftp_with_lease(
@@ -165,6 +198,53 @@ fn boot_kernel_from_tftp_with_lease(
     );
     let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
 
+    let (kernel_base, image) = download_kernel_image_from_tftp(gem, clock, lease, ports)?;
+
+    #[cfg(feature = "tftp-initramfs")]
+    let initramfs_len = download_initramfs(gem, clock, lease, ports)?;
+    #[cfg(not(feature = "tftp-initramfs"))]
+    let initramfs_len = {
+        crate::logln!("[TFTP] initramfs disabled; patching an empty initrd range");
+        0
+    };
+    let initrd_start = if initramfs_len == 0 {
+        0
+    } else {
+        placement::INITRAMFS_LOAD_BASE
+    };
+    let initrd_end = initrd_start
+        .checked_add(initramfs_len)
+        .ok_or(BootError::AddressOverflow)?;
+
+    if skip_rp1_reload {
+        rp1_policy = Some(load_rp1_policy_from_tftp(gem, clock, lease, ports)?);
+        crate::logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
+    }
+
+    let patched_dtb =
+        patch_dtb_and_log_handoff(dtb, &image, initrd_start, initrd_end, rp1_policy.as_ref())?;
+
+    // SAFETY: this is the terminal Linux handoff path. The GEM reference is
+    // not used after release; Linux will probe and own the device next.
+    unsafe { gem.release_after_linux_handoff() };
+    crate::logln!("[TFTP] Rp1Gem Linux handoff cleanup complete");
+    linux::clean_dcache_poc(kernel_base, image.image_size);
+    linux::clean_dcache_poc(initrd_start, initramfs_len);
+    linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
+    linux::invalidate_icache_all();
+
+    // SAFETY: all downloaded artifacts were bounded, kernel header validated,
+    // DTB was patched into its reserved range, GEM was released for Linux, and
+    // cache maintenance completed before the terminal EL2 handoff.
+    unsafe { linux::jump_to_linux_el2(image.entry, patched_dtb.addr) }
+}
+
+fn download_kernel_image_from_tftp(
+    gem: &mut Rp1Gem,
+    clock: &TimerClock,
+    lease: &NetworkBootLease,
+    ports: &mut TftpSessionPorts,
+) -> Result<(usize, linux::LinuxImage), BootError> {
     let kernel_cfg = tftp_config(lease, TFTP_KERNEL_FILENAME, ports.alloc());
     crate::logln!(
         "[TFTP] rrq file={} local_port={}",
@@ -189,28 +269,36 @@ fn boot_kernel_from_tftp_with_lease(
     )?;
     drop(kernel_staging);
     let image = linux::validate_arm64_image(kernel.base, kernel.len, placement::KERNEL_MAX_SIZE)?;
+    Ok((kernel.base, image))
+}
 
-    #[cfg(feature = "tftp-initramfs")]
-    let initramfs_len = download_initramfs(gem, clock, lease, ports)?;
-    #[cfg(not(feature = "tftp-initramfs"))]
-    let initramfs_len = {
-        crate::logln!("[TFTP] initramfs disabled; patching an empty initrd range");
-        0
-    };
-    let initrd_start = if initramfs_len == 0 {
-        0
-    } else {
-        placement::INITRAMFS_LOAD_BASE
-    };
-    let initrd_end = initrd_start
-        .checked_add(initramfs_len)
-        .ok_or(BootError::AddressOverflow)?;
+fn handoff_preloaded_kernel(
+    dtb: &dtb::DtbParser,
+    kernel_base: usize,
+    image: linux::LinuxImage,
+    initrd_start: usize,
+    initrd_end: usize,
+    rp1_policy: Option<&Rp1DtbPolicy>,
+) -> Result<(), BootError> {
+    crate::logln!("[TFTP] using preloaded Linux kernel for observe handoff");
+    let patched_dtb = patch_dtb_and_log_handoff(dtb, &image, initrd_start, initrd_end, rp1_policy)?;
+    linux::clean_dcache_poc(kernel_base, image.image_size);
+    linux::clean_dcache_poc(initrd_start, initrd_end - initrd_start);
+    linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
+    linux::invalidate_icache_all();
 
-    if skip_rp1_reload {
-        rp1_policy = Some(load_rp1_policy_from_tftp(gem, clock, lease, ports)?);
-        crate::logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
-    }
+    // SAFETY: kernel/initramfs were downloaded before RP1 reload, and this path
+    // performs no post-reset GEM or TFTP access before terminal EL2 handoff.
+    unsafe { linux::jump_to_linux_el2(image.entry, patched_dtb.addr) }
+}
 
+fn patch_dtb_and_log_handoff(
+    dtb: &dtb::DtbParser,
+    image: &linux::LinuxImage,
+    initrd_start: usize,
+    initrd_end: usize,
+    rp1_policy: Option<&Rp1DtbPolicy>,
+) -> Result<dtb_patch::PatchedDtb, BootError> {
     let patched_dtb = dtb_patch::patch_dtb_for_linux(
         dtb,
         placement::DTB_COPY_BASE,
@@ -218,7 +306,7 @@ fn boot_kernel_from_tftp_with_lease(
         initrd_start,
         initrd_end,
         None,
-        rp1_policy.as_ref(),
+        rp1_policy,
     )?;
     let regs = linux::read_el2_debug_regs();
     crate::logln!(
@@ -240,20 +328,43 @@ fn boot_kernel_from_tftp_with_lease(
         regs.cntvoff_el2,
         regs.cptr_el2
     );
+    Ok(patched_dtb)
+}
 
-    // SAFETY: this is the terminal Linux handoff path. The GEM reference is
-    // not used after release; Linux will probe and own the device next.
-    unsafe { gem.release_after_linux_handoff() };
-    crate::logln!("[TFTP] Rp1Gem Linux handoff cleanup complete");
-    linux::clean_dcache_poc(kernel.base, image.image_size);
-    linux::clean_dcache_poc(initrd_start, initramfs_len);
-    linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
-    linux::invalidate_icache_all();
+#[cfg(feature = "rp1-linux-observe-failure")]
+fn wait_for_post_reload_rp1(dtb: &dtb::DtbParser) -> Result<(), BootError> {
+    for (attempt, delay_ms) in [100u64, 500, 1_000].into_iter().enumerate() {
+        crate::timer::delay_millis(delay_ms);
+        match bcm2712::init_rp1_with_options(
+            dtb,
+            bcm2712::Rp1InitOptions {
+                mode: bcm2712::Rp1InitMode::FullPcieInit,
+                strict: false,
+            },
+        ) {
+            Ok(_) => {
+                crate::logln!(
+                    "[RP1LINUXOBS] post-reload RP1 PCIe reinit ok attempt={} delay_ms={}",
+                    attempt,
+                    delay_ms
+                );
+                return Ok(());
+            }
+            Err(err) => crate::logln!(
+                "[RP1LINUXOBS] post-reload RP1 PCIe reinit failed attempt={} delay_ms={} err={:?}",
+                attempt,
+                delay_ms,
+                err
+            ),
+        }
+    }
+    crate::logln!("[RP1LINUXOBS] aborting Linux handoff after RP1 PCIe reinit failure");
+    Err(BootError::Rp1Pcie)
+}
 
-    // SAFETY: all downloaded artifacts were bounded, kernel header validated,
-    // DTB was patched into its reserved range, GEM was released for Linux, and
-    // cache maintenance completed before the terminal EL2 handoff.
-    unsafe { linux::jump_to_linux_el2(image.entry, patched_dtb.addr) }
+#[cfg(not(feature = "rp1-linux-observe-failure"))]
+fn wait_for_post_reload_rp1(_dtb: &dtb::DtbParser) -> Result<(), BootError> {
+    Ok(())
 }
 
 fn map_dhcp_error(err: DhcpError) -> BootError {
@@ -361,8 +472,11 @@ fn boot_rp1_from_tftp(
         image.stack
     );
 
-    gem.quiesce();
-    crate::logln!("[TFTP] Rp1Gem quiesce before RP1 reload complete");
+    // SAFETY: every pre-reload download is complete, and this GEM reference is
+    // not used after RP1 reset. Releasing it first prevents stale link state
+    // from racing the replacement firmware's endpoint bring-up.
+    unsafe { gem.release_after_quiesce() };
+    crate::logln!("[TFTP] Rp1Gem release before RP1 reload complete");
     crate::start_rp1_image(dtb, &image)?;
     Ok(policy)
 }

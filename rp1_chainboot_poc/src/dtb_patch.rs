@@ -1,3 +1,4 @@
+#[cfg(feature = "rp1-scmi-uart-clock")]
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -10,16 +11,19 @@ use rp1_abi::owner::{DEV_GPIO, DEV_UART0, DEV_UART1};
 use crate::BootError;
 use crate::rp1_dtb_policy::{RP1_DEVICE_DTB_NODES, Rp1DeviceOwner, Rp1DtbPolicy};
 
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const RP1_CLOCK_NODE_PATHS: &[&str] = &[
     "/axi/pcie@1000120000/rp1/clocks@18000",
     "/axi/pcie@120000/rp1/clocks@18000",
     "/soc/rp1/clocks@18000",
 ];
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const RP1_MBOX_NODE_PATHS: &[&str] = &[
     "/axi/pcie@1000120000/rp1/mailbox@8000",
     "/axi/pcie@120000/rp1/mailbox@8000",
     "/soc/rp1/mailbox@8000",
 ];
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const RP1_SRAM_NODE_PATHS: &[&str] = &[
     "/axi/pcie@1000120000/rp1/sram@400000",
     "/axi/pcie@120000/rp1/sram@400000",
@@ -30,14 +34,21 @@ const RP1_GPIO_NODE_PATHS: &[&str] = &[
     "/axi/pcie@120000/rp1/gpio@d0000",
     "/soc/rp1/gpio@d0000",
 ];
-
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const RP1_PLL_SYS_PRI_PH: u32 = 6;
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const RP1_CLK_UART: u32 = 15;
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const SCMI_CLOCK_UART: u32 = 0;
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const SCMI_CLOCK_UART_APB: u32 = 1;
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const SCMI_PROTOCOL_CLOCK: u32 = 0x14;
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const SCMI_MBOX_CHANNEL: u32 = 1;
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const SCMI_SHMEM_OFFSET: u32 = 0xfb00;
+#[cfg(feature = "rp1-scmi-uart-clock")]
 const SCMI_SHMEM_SIZE: u32 = 0x100;
 
 pub struct PatchedDtb {
@@ -164,7 +175,11 @@ fn apply_rp1_policy(
     }
 
     if mixed_uart_ownership(policy) {
+        prepare_mixed_uart_ownership(tree, policy)?;
+        #[cfg(feature = "rp1-scmi-uart-clock")]
         apply_uart_scmi_coexistence(tree, policy)?;
+        #[cfg(not(feature = "rp1-scmi-uart-clock"))]
+        crate::logln!("[DTB] RP1 UART mixed ownership: stock clk-rp1 clocks");
     }
 
     Ok(())
@@ -178,6 +193,33 @@ fn mixed_uart_ownership(policy: &Rp1DtbPolicy) -> bool {
     linux_owns_uart && firmware_owns_uart
 }
 
+fn prepare_mixed_uart_ownership(
+    tree: &mut DeviceTreeOwned<'_>,
+    policy: &Rp1DtbPolicy,
+) -> Result<(), BootError> {
+    for (dev_bit, pin_symbol) in [(DEV_UART0, "rp1_uart0_14_15"), (DEV_UART1, "rp1_uart1_0_1")] {
+        if policy.owner_of(dev_bit) != Rp1DeviceOwner::Linux {
+            continue;
+        }
+        let spec = RP1_DEVICE_DTB_NODES
+            .iter()
+            .find(|spec| spec.bit == dev_bit)
+            .ok_or(BootError::Rp1DtbNodeNotFound)?;
+        let uart_node_id =
+            find_existing_node(tree, spec.fallback_paths).ok_or(BootError::Rp1DtbNodeNotFound)?;
+        ensure_pinctrl_default(tree, uart_node_id, pin_symbol)?;
+    }
+
+    if let Some(rp1_fw) = tree.find_node_by_path("/rp1_firmware") {
+        set_node_status(tree, rp1_fw, "disabled")?;
+    }
+    if policy.owner_of(DEV_UART0) == Rp1DeviceOwner::Rp1 {
+        reserve_gpio_range(tree, 14, 2)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "rp1-scmi-uart-clock")]
 fn apply_uart_scmi_coexistence(
     tree: &mut DeviceTreeOwned<'_>,
     policy: &Rp1DtbPolicy,
@@ -197,7 +239,7 @@ fn apply_uart_scmi_coexistence(
         return Err(BootError::Rp1DtbNodeNotFound);
     };
     let mut shmem_path = String::from(sram_path);
-    shmem_path.push_str("/scmi-shmem@fb00");
+    shmem_path.push_str("/scmi-sram-section@fb00");
     let shmem_node_id = tree
         .get_or_create_node_by_path(&shmem_path)
         .map_err(|_| BootError::DtbPatch)?;
@@ -267,7 +309,7 @@ fn apply_uart_scmi_coexistence(
     }
     let scmi_clock_phandle = node_phandle_or_allocate(tree, scmi_clock_node_id)?;
 
-    for (dev_bit, pin_symbol) in [(DEV_UART0, "rp1_uart0_14_15"), (DEV_UART1, "rp1_uart1_0_1")] {
+    for dev_bit in [DEV_UART0, DEV_UART1] {
         if policy.owner_of(dev_bit) != Rp1DeviceOwner::Linux {
             continue;
         }
@@ -287,7 +329,6 @@ fn apply_uart_scmi_coexistence(
                 SCMI_CLOCK_UART_APB,
             ])),
         );
-        ensure_pinctrl_default(tree, uart_node_id, pin_symbol)?;
     }
 
     // Keep the physical RP1 clock provider alive in CCF. The UART consumers use
@@ -315,17 +356,6 @@ fn apply_uart_scmi_coexistence(
     // Bridge the early-boot interval before the fixed-clock keepers have probed.
     // After probe, the keepers provide the explicit CCF references.
     ensure_bootarg(tree, "clk_ignore_unused")?;
-
-    // Replacement firmware in this PoC does not service the stock channel-0
-    // rp1-firmware ABI. Leave mailbox channel 1 to SCMI and disable channel 0's
-    // Linux client instead of allowing a timeout during probe.
-    if let Some(rp1_fw) = tree.find_node_by_path("/rp1_firmware") {
-        set_node_status(tree, rp1_fw, "disabled")?;
-    }
-
-    if policy.owner_of(DEV_UART0) == Rp1DeviceOwner::Rp1 {
-        reserve_gpio_range(tree, 14, 2)?;
-    }
 
     crate::logln!(
         "[DTB] RP1 UART SCMI coexistence: mbox_ch={} shmem=0x{:x}+0x{:x} scmi_phandle=0x{:x}",
@@ -412,6 +442,7 @@ fn reserve_gpio_range(
     Ok(())
 }
 
+#[cfg(feature = "rp1-scmi-uart-clock")]
 fn add_clock_keeper(
     tree: &mut DeviceTreeOwned<'_>,
     path: &str,
@@ -454,6 +485,7 @@ fn add_clock_keeper(
     Ok(())
 }
 
+#[cfg(feature = "rp1-scmi-uart-clock")]
 fn drop_assigned_clock_rate(
     tree: &mut DeviceTreeOwned<'_>,
     node_id: usize,
@@ -495,6 +527,7 @@ fn drop_assigned_clock_rate(
     Ok(())
 }
 
+#[cfg(feature = "rp1-scmi-uart-clock")]
 fn ensure_bootarg(tree: &mut DeviceTreeOwned<'_>, arg: &str) -> Result<(), BootError> {
     let chosen = tree
         .get_or_create_node_by_path("/chosen")
@@ -520,6 +553,7 @@ fn ensure_bootarg(tree: &mut DeviceTreeOwned<'_>, arg: &str) -> Result<(), BootE
     Ok(())
 }
 
+#[cfg(feature = "rp1-scmi-uart-clock")]
 fn node_phandle_or_allocate(
     tree: &mut DeviceTreeOwned<'_>,
     node_id: usize,
@@ -538,6 +572,7 @@ fn node_phandle_or_allocate(
     Ok(phandle)
 }
 
+#[cfg(feature = "rp1-scmi-uart-clock")]
 fn max_phandle(tree: &DeviceTreeOwned<'_>) -> u32 {
     let mut max = 0;
     for node in &tree.nodes {
@@ -607,6 +642,7 @@ fn find_existing_node(tree: &DeviceTreeOwned<'_>, paths: &[&str]) -> Option<usiz
     None
 }
 
+#[cfg(any(feature = "rp1-scmi-uart-clock", feature = "rp1-linux-observe-failure"))]
 fn find_existing_path<'a>(tree: &DeviceTreeOwned<'_>, paths: &'a [&str]) -> Option<&'a str> {
     paths
         .iter()
@@ -629,6 +665,7 @@ fn be32(value: u32) -> Vec<u8> {
     value.to_be_bytes().to_vec()
 }
 
+#[cfg(feature = "rp1-scmi-uart-clock")]
 fn be32_cells(values: &[u32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(values.len() * 4);
     for value in values {
