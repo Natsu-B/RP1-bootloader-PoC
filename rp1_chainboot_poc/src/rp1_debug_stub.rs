@@ -95,7 +95,10 @@ where
         }
 
         let mut regs = [0u8; debug::MAILBOX_REG_COUNT * 4];
-        if self.read_mem32(debug::MAILBOX_ADDR + OFF_REGS, &mut regs).is_err() {
+        if self
+            .read_mem32(debug::MAILBOX_ADDR + OFF_REGS, &mut regs)
+            .is_err()
+        {
             self.send_packet(b"E02");
             return;
         }
@@ -162,7 +165,9 @@ where
             return;
         }
 
-        if self.write_mem32(debug::MAILBOX_ADDR + OFF_DATA, &data[..len]).is_err()
+        if self
+            .write_mem32(debug::MAILBOX_ADDR + OFF_DATA, &data[..len])
+            .is_err()
             || self.write_u32(OFF_ARG0, addr).is_err()
             || self.write_u32(OFF_ARG1, len as u32).is_err()
             || self.command_no_payload(debug::command::WRITE_MEM).is_err()
@@ -304,7 +309,9 @@ fn parse_addr_len(input: &[u8]) -> Option<(u32, usize)> {
 fn parse_hex_u32(input: &[u8]) -> Option<u32> {
     let mut value = 0u32;
     for b in input {
-        value = value.checked_mul(16)?.checked_add(u32::from(from_hex(*b)?))?;
+        value = value
+            .checked_mul(16)?
+            .checked_add(u32::from(from_hex(*b)?))?;
     }
     Some(value)
 }
