@@ -2,6 +2,10 @@ use crate::BootError;
 use crate::bcm2712_aon::Rp1RunPin;
 use crate::rp1_image::Rp1Image;
 
+#[cfg(feature = "rp1-gdb-debug-stub")]
+#[path = "rp1_debug_stub.rs"]
+mod rp1_debug_stub;
+
 pub const RP1_I2C_ADDR: u8 = 0x43;
 pub const RP1_CHUNK_SIZE: usize = 0x40;
 pub const RP1_BOOT_MAGIC: u32 = 0xb007_c0de;
@@ -162,6 +166,10 @@ where
         crate::logln!("[RP1BOOT] scratch programmed");
         self.start()?;
         crate::logln!("[RP1BOOT] proc0 started");
+
+        #[cfg(feature = "rp1-gdb-debug-stub")]
+        rp1_debug_stub::serve(self);
+
         Ok(())
     }
 }

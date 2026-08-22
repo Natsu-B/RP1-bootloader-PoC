@@ -4,9 +4,21 @@ use dtb::{
     DeviceTree, DeviceTreeEditExt, DeviceTreeOwned, DeviceTreeQueryExt, NameRef, NodeEditExt,
     ValueRef,
 };
+use rp1_abi::owner::{DEV_UART0, DEV_UART1};
 
 use crate::BootError;
-use crate::rp1_dtb_policy::{RP1_DEVICE_DTB_NODES, Rp1DtbPolicy};
+use crate::rp1_dtb_policy::{RP1_DEVICE_DTB_NODES, Rp1DeviceOwner, Rp1DtbPolicy};
+
+const RP1_CLOCK_NODE_PATHS: &[&str] = &[
+    "/axi/pcie@1000120000/rp1/clocks@18000",
+    "/axi/pcie@120000/rp1/clocks@18000",
+    "/soc/rp1/clocks@18000",
+];
+
+// Keep these local rather than depending on Linux headers in the bootloader.
+// They are the ABI IDs from include/dt-bindings/clock/rp1.h.
+const RP1_PLL_SYS_PRI_PH: u32 = 6;
+const RP1_CLK_UART: u32 = 15;
 
 pub struct PatchedDtb {
     pub addr: usize,
@@ -131,7 +143,125 @@ fn apply_rp1_policy(
         );
     }
 
+    apply_uart_shared_clock_keepers(tree, policy)?;
+
     Ok(())
+}
+
+fn apply_uart_shared_clock_keepers(
+    tree: &mut DeviceTreeOwned<'_>,
+    policy: &Rp1DtbPolicy,
+) -> Result<(), BootError> {
+    let uart0 = policy.owner_of(DEV_UART0);
+    let uart1 = policy.owner_of(DEV_UART1);
+    let linux_owns_uart = uart0 == Rp1DeviceOwner::Linux || uart1 == Rp1DeviceOwner::Linux;
+    let firmware_owns_uart = uart0 == Rp1DeviceOwner::Rp1 || uart1 == Rp1DeviceOwner::Rp1;
+
+    if !(linux_owns_uart && firmware_owns_uart) {
+        crate::logln!(
+            "[DTB] RP1 UART shared-clock keeper not needed uart0={} uart1={}",
+            uart0.as_str(),
+            uart1.as_str()
+        );
+        return Ok(());
+    }
+
+    let Some(clock_node_id) = find_existing_node(tree, RP1_CLOCK_NODE_PATHS) else {
+        crate::logln!("[DTB] RP1 clock provider node not found for UART coexistence");
+        return Err(BootError::Rp1DtbNodeNotFound);
+    };
+    let Some(clock_phandle) = node_phandle(tree, clock_node_id) else {
+        crate::logln!("[DTB] RP1 clock provider phandle missing for UART coexistence");
+        return Err(BootError::DtbPatch);
+    };
+
+    add_clock_keeper(
+        tree,
+        "/regulator-rp1-uartclk-keeper",
+        "rp1-uartclk-coexistence-keeper",
+        clock_phandle,
+        RP1_CLK_UART,
+    )?;
+    add_clock_keeper(
+        tree,
+        "/regulator-rp1-uart-apb-keeper",
+        "rp1-uart-apb-coexistence-keeper",
+        clock_phandle,
+        RP1_PLL_SYS_PRI_PH,
+    )?;
+
+    crate::logln!(
+        "[DTB] RP1 UART shared clocks pinned: clk_uart={} pll_sys_pri_ph={} provider_phandle=0x{:x}",
+        RP1_CLK_UART,
+        RP1_PLL_SYS_PRI_PH,
+        clock_phandle
+    );
+    Ok(())
+}
+
+fn add_clock_keeper(
+    tree: &mut DeviceTreeOwned<'_>,
+    path: &str,
+    regulator_name: &str,
+    clock_phandle: u32,
+    clock_id: u32,
+) -> Result<(), BootError> {
+    let node_id = tree
+        .get_or_create_node_by_path(path)
+        .map_err(|_| BootError::DtbPatch)?;
+    let node = tree.node_mut(node_id).ok_or(BootError::DtbPatch)?;
+
+    node.set_property(
+        NameRef::Owned("compatible".into()),
+        ValueRef::Owned(string_prop("regulator-fixed-clock")),
+    );
+    node.set_property(
+        NameRef::Owned("regulator-name".into()),
+        ValueRef::Owned(string_prop(regulator_name)),
+    );
+    // A fixed regulator requires a single fixed voltage even though this node is
+    // used only as a clock-backed CCF vote. The numeric value has no hardware
+    // voltage meaning here.
+    node.set_property(
+        NameRef::Owned("regulator-min-microvolt".into()),
+        ValueRef::Owned(be32(1)),
+    );
+    node.set_property(
+        NameRef::Owned("regulator-max-microvolt".into()),
+        ValueRef::Owned(be32(1)),
+    );
+    node.set_property(
+        NameRef::Owned("clocks".into()),
+        ValueRef::Owned(be32_cells(&[clock_phandle, clock_id])),
+    );
+    node.set_property(
+        NameRef::Owned("regulator-boot-on".into()),
+        ValueRef::Owned(Vec::new()),
+    );
+    node.set_property(
+        NameRef::Owned("regulator-always-on".into()),
+        ValueRef::Owned(Vec::new()),
+    );
+
+    Ok(())
+}
+
+fn node_phandle(tree: &DeviceTreeOwned<'_>, node_id: usize) -> Option<u32> {
+    let node = tree.nodes.get(node_id)?;
+    for property_name in ["phandle", "linux,phandle"] {
+        let Some(property) = node
+            .properties
+            .iter()
+            .find(|property| property.name.as_str() == property_name)
+        else {
+            continue;
+        };
+        let bytes = property.value.as_slice();
+        if bytes.len() == 4 {
+            return Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
+        }
+    }
+    None
 }
 
 fn find_existing_node(tree: &DeviceTreeOwned<'_>, paths: &[&str]) -> Option<usize> {
@@ -143,10 +273,26 @@ fn find_existing_node(tree: &DeviceTreeOwned<'_>, paths: &[&str]) -> Option<usiz
     None
 }
 
-fn status_prop(value: &str) -> Vec<u8> {
+fn string_prop(value: &str) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(value.as_bytes());
     bytes.push(0);
+    bytes
+}
+
+fn status_prop(value: &str) -> Vec<u8> {
+    string_prop(value)
+}
+
+fn be32(value: u32) -> Vec<u8> {
+    value.to_be_bytes().to_vec()
+}
+
+fn be32_cells(values: &[u32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    for value in values {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
     bytes
 }
 
