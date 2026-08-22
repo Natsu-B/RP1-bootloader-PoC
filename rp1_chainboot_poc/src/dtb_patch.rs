@@ -7,9 +7,7 @@ use dtb::{
 use rp1_abi::owner::{DEV_UART0, DEV_UART1};
 
 use crate::BootError;
-use crate::rp1_dtb_policy::{
-    RP1_DEVICE_DTB_NODES, Rp1DeviceOwner, Rp1DtbPolicy,
-};
+use crate::rp1_dtb_policy::{RP1_DEVICE_DTB_NODES, Rp1DeviceOwner, Rp1DtbPolicy};
 
 const RP1_CLOCK_NODE_PATHS: &[&str] = &[
     "/axi/pcie@1000120000/rp1/clocks@18000",
@@ -251,10 +249,13 @@ fn add_clock_keeper(
 fn node_phandle(tree: &DeviceTreeOwned<'_>, node_id: usize) -> Option<u32> {
     let node = tree.nodes.get(node_id)?;
     for property_name in ["phandle", "linux,phandle"] {
-        let property = node
+        let Some(property) = node
             .properties
             .iter()
-            .find(|property| property.name.as_str() == property_name)?;
+            .find(|property| property.name.as_str() == property_name)
+        else {
+            continue;
+        };
         let bytes = property.value.as_slice();
         if bytes.len() == 4 {
             return Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
