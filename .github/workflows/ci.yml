@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build validation
+    name: Format and build
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -29,6 +29,10 @@ jobs:
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check formatting
+        working-directory: RP1-bootloader-PoC
+        run: nix develop --command cargo fmt --all -- --check
 
       - name: Build bootloader variants
         working-directory: RP1-bootloader-PoC
