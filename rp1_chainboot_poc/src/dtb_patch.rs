@@ -267,10 +267,7 @@ fn apply_uart_scmi_coexistence(
     }
     let scmi_clock_phandle = node_phandle_or_allocate(tree, scmi_clock_node_id)?;
 
-    for (dev_bit, pin_symbol) in [
-        (DEV_UART0, "rp1_uart0_14_15"),
-        (DEV_UART1, "rp1_uart1_0_1"),
-    ] {
+    for (dev_bit, pin_symbol) in [(DEV_UART0, "rp1_uart0_14_15"), (DEV_UART1, "rp1_uart1_0_1")] {
         if policy.owner_of(dev_bit) != Rp1DeviceOwner::Linux {
             continue;
         }
@@ -278,8 +275,8 @@ fn apply_uart_scmi_coexistence(
             .iter()
             .find(|spec| spec.bit == dev_bit)
             .ok_or(BootError::Rp1DtbNodeNotFound)?;
-        let uart_node_id = find_existing_node(tree, spec.fallback_paths)
-            .ok_or(BootError::Rp1DtbNodeNotFound)?;
+        let uart_node_id =
+            find_existing_node(tree, spec.fallback_paths).ok_or(BootError::Rp1DtbNodeNotFound)?;
         let node = tree.node_mut(uart_node_id).ok_or(BootError::DtbPatch)?;
         node.set_property(
             NameRef::Owned("clocks".into()),
@@ -466,7 +463,8 @@ fn drop_assigned_clock_rate(
     let Some(clocks) = property_bytes(tree, node_id, "assigned-clocks").map(|v| v.to_vec()) else {
         return Ok(());
     };
-    let Some(rates) = property_bytes(tree, node_id, "assigned-clock-rates").map(|v| v.to_vec()) else {
+    let Some(rates) = property_bytes(tree, node_id, "assigned-clock-rates").map(|v| v.to_vec())
+    else {
         return Ok(());
     };
     if clocks.len() % 8 != 0 || rates.len() % 4 != 0 || clocks.len() / 8 != rates.len() / 4 {
@@ -529,7 +527,9 @@ fn node_phandle_or_allocate(
     if let Some(phandle) = node_phandle(tree, node_id) {
         return Ok(phandle);
     }
-    let phandle = max_phandle(tree).checked_add(1).ok_or(BootError::DtbPatch)?;
+    let phandle = max_phandle(tree)
+        .checked_add(1)
+        .ok_or(BootError::DtbPatch)?;
     let node = tree.node_mut(node_id).ok_or(BootError::DtbPatch)?;
     node.set_property(
         NameRef::Owned("phandle".into()),
