@@ -292,12 +292,14 @@ fn main_flow() -> Result<(), BootError> {
 
             let fw_scratch = placement::rp1_scratch_slice();
             if let Some(ref elf_bytes) = rp1_elf_file {
-                rp1_policy = Some(enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?);
-                let image = rp1_image::build_from_rp1_elf(
+                let policy = enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?;
+                let image = rp1_image::build_from_rp1_elf_with_profile(
                     elf_bytes,
                     fw_scratch,
                     rp1_image::RP1_FALLBACK_STACK,
+                    policy.memory_profile,
                 )?;
+                rp1_policy = Some(policy);
                 logln!(
                     "[RP1ELF] load_base=0x{:x} image_len={} entry=0x{:x} stack=0x{:x}",
                     image.load_addr,
@@ -592,9 +594,13 @@ pub(crate) fn boot_rp1_from_sd(
     )?;
     let scratch = placement::rp1_scratch_slice();
     let image = if let Some(ref elf_bytes) = rp1_elf_file {
-        let _policy = enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?;
-        let image =
-            rp1_image::build_from_rp1_elf(elf_bytes, scratch, rp1_image::RP1_FALLBACK_STACK)?;
+        let policy = enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?;
+        let image = rp1_image::build_from_rp1_elf_with_profile(
+            elf_bytes,
+            scratch,
+            rp1_image::RP1_FALLBACK_STACK,
+            policy.memory_profile,
+        )?;
         logln!(
             "[RP1ELF] load_base=0x{:x} image_len={} entry=0x{:x} stack=0x{:x}",
             image.load_addr,

@@ -1,6 +1,6 @@
 use rp1_abi::note::{
-    RP1_NOTE_ABI_VERSION, RP1_NOTE_MAGIC, RP1_NOTE_NAME, RP1_NOTE_TYPE_BOOT_V1,
-    RP1_VERSION_NON_PIO, Rp1BootInfoV1,
+    Rp1BootInfoV1, RP1_NOTE_ABI_VERSION, RP1_NOTE_MAGIC, RP1_NOTE_NAME, RP1_NOTE_TYPE_BOOT_V1,
+    RP1_VERSION_NON_PIO,
 };
 
 pub enum Rp1NoteState {
@@ -15,7 +15,28 @@ pub struct Rp1BootInfo {
     pub owner_disabled: u64,
     pub mailbox_flags: u32,
     pub firmware_version_kind: u32,
+    pub memory_profile: Rp1MemoryProfile,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Rp1MemoryProfile {
+    Legacy,
+    PrivateLayoutV1,
+    SharedSramV2,
+}
+
+pub const RP1_MAILBOX_FLAG_ENABLE: u32 = 1 << 0;
+pub const RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1: u32 = 1 << 1;
+pub const RP1_MAILBOX_FLAG_SHARED_SRAM_V2: u32 = 1 << 2;
+pub const RP1_MAILBOX_FLAGS_SUPPORTED_MASK: u32 =
+    RP1_MAILBOX_FLAG_ENABLE | RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2;
+pub const RP1_SHARED_SRAM_V2_LOAD_BASE: u32 = 0x2000_0000;
+pub const RP1_PRIVATE_LAYOUT_V1_MAX_IMAGE_LEN: usize = 0xf800;
+pub const RP1_PRIVATE_LAYOUT_V1_STACK_TOP: u32 =
+    RP1_SHARED_SRAM_V2_LOAD_BASE + RP1_PRIVATE_LAYOUT_V1_MAX_IMAGE_LEN as u32;
+pub const RP1_SHARED_SRAM_V2_MAX_IMAGE_LEN: usize = 0xf700;
+pub const RP1_SHARED_SRAM_V2_STACK_TOP: u32 =
+    RP1_SHARED_SRAM_V2_LOAD_BASE + RP1_SHARED_SRAM_V2_MAX_IMAGE_LEN as u32;
 
 pub fn parse_rp1_note(elf_bytes: &[u8]) -> Rp1NoteState {
     let Some(note_section) = find_note_section(elf_bytes) else {
@@ -110,7 +131,7 @@ fn parse_note_section(section: &[u8]) -> Rp1NoteState {
 }
 
 fn parse_boot_info(desc: &[u8]) -> Rp1NoteState {
-    if desc.len() < Rp1BootInfoV1::SIZE {
+    if desc.len() != Rp1BootInfoV1::SIZE {
         return Rp1NoteState::Invalid;
     }
     if desc.get(0..8) != Some(RP1_NOTE_MAGIC.as_slice()) {
@@ -122,7 +143,19 @@ fn parse_boot_info(desc: &[u8]) -> Rp1NoteState {
     if le16_opt(desc, 10) != Some(Rp1BootInfoV1::SIZE as u16) {
         return Rp1NoteState::Invalid;
     }
+    let Some(header_flags) = le32_opt(desc, 12) else {
+        return Rp1NoteState::Invalid;
+    };
+    if header_flags != 0 {
+        return Rp1NoteState::Invalid;
+    }
     if le32_opt(desc, 16).unwrap_or(1) != 0 {
+        return Rp1NoteState::Invalid;
+    }
+    if desc
+        .get(144..176)
+        .is_none_or(|reserved| reserved.iter().any(|&b| b != 0))
+    {
         return Rp1NoteState::Invalid;
     }
 
@@ -145,6 +178,44 @@ fn parse_boot_info(desc: &[u8]) -> Rp1NoteState {
     let Some(mailbox_flags) = le32_opt(desc, 72) else {
         return Rp1NoteState::Invalid;
     };
+    if mailbox_flags & !RP1_MAILBOX_FLAGS_SUPPORTED_MASK != 0
+        || mailbox_flags & (RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2)
+            == (RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2)
+    {
+        return Rp1NoteState::Invalid;
+    }
+    let Some(entry) = le32_opt(desc, 20) else {
+        return Rp1NoteState::Invalid;
+    };
+    let Some(stack_top) = le32_opt(desc, 24) else {
+        return Rp1NoteState::Invalid;
+    };
+    let Some(load_base) = le32_opt(desc, 32) else {
+        return Rp1NoteState::Invalid;
+    };
+    let Some(image_min_addr) = le32_opt(desc, 36) else {
+        return Rp1NoteState::Invalid;
+    };
+    let Some(image_max_addr) = le32_opt(desc, 40) else {
+        return Rp1NoteState::Invalid;
+    };
+    let memory_profile = match mailbox_flags
+        & (RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2)
+    {
+        0 => Rp1MemoryProfile::Legacy,
+        RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 => Rp1MemoryProfile::PrivateLayoutV1,
+        RP1_MAILBOX_FLAG_SHARED_SRAM_V2 => Rp1MemoryProfile::SharedSramV2,
+        _ => return Rp1NoteState::Invalid,
+    };
+    if !matches!(memory_profile, Rp1MemoryProfile::Legacy)
+        && (entry != 0
+            || stack_top != 0
+            || load_base != 0
+            || image_min_addr != 0
+            || image_max_addr != 0)
+    {
+        return Rp1NoteState::Invalid;
+    }
 
     Rp1NoteState::Valid(Rp1BootInfo {
         owner_rp1,
@@ -152,6 +223,7 @@ fn parse_boot_info(desc: &[u8]) -> Rp1NoteState {
         owner_disabled,
         mailbox_flags,
         firmware_version_kind,
+        memory_profile,
     })
 }
 
@@ -193,4 +265,162 @@ fn le64_opt(bytes: &[u8], off: usize) -> Option<u64> {
     Some(u64::from_le_bytes([
         src[0], src[1], src[2], src[3], src[4], src[5], src[6], src[7],
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn desc(mailbox_flags: u32) -> [u8; Rp1BootInfoV1::SIZE] {
+        let mut desc = [0; Rp1BootInfoV1::SIZE];
+        desc[0..8].copy_from_slice(&RP1_NOTE_MAGIC);
+        put_u16(&mut desc, 8, RP1_NOTE_ABI_VERSION);
+        put_u16(&mut desc, 10, Rp1BootInfoV1::SIZE as u16);
+        put_u32(&mut desc, 72, mailbox_flags);
+        put_u32(&mut desc, 76, RP1_VERSION_NON_PIO);
+        desc
+    }
+
+    #[test]
+    fn default_note_is_legacy_compatible() {
+        let parsed = parse_boot_info(&desc(0));
+        assert!(matches!(
+            parsed,
+            Rp1NoteState::Valid(Rp1BootInfo {
+                memory_profile: Rp1MemoryProfile::Legacy,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn note_flag_truth_table_classifies_layouts() {
+        for flags in [0, RP1_MAILBOX_FLAG_ENABLE] {
+            assert!(matches!(
+                parse_boot_info(&desc(flags)),
+                Rp1NoteState::Valid(Rp1BootInfo {
+                    memory_profile: Rp1MemoryProfile::Legacy,
+                    ..
+                })
+            ));
+        }
+
+        for flags in [
+            RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1,
+            RP1_MAILBOX_FLAG_ENABLE | RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1,
+        ] {
+            assert!(matches!(
+                parse_boot_info(&desc(flags)),
+                Rp1NoteState::Valid(Rp1BootInfo {
+                    memory_profile: Rp1MemoryProfile::PrivateLayoutV1,
+                    ..
+                })
+            ));
+        }
+
+        for flags in [
+            RP1_MAILBOX_FLAG_SHARED_SRAM_V2,
+            RP1_MAILBOX_FLAG_ENABLE | RP1_MAILBOX_FLAG_SHARED_SRAM_V2,
+        ] {
+            assert!(matches!(
+                parse_boot_info(&desc(flags)),
+                Rp1NoteState::Valid(Rp1BootInfo {
+                    memory_profile: Rp1MemoryProfile::SharedSramV2,
+                    ..
+                })
+            ));
+        }
+
+        for flags in [
+            RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1 | RP1_MAILBOX_FLAG_SHARED_SRAM_V2,
+            RP1_MAILBOX_FLAG_ENABLE
+                | RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1
+                | RP1_MAILBOX_FLAG_SHARED_SRAM_V2,
+            8,
+        ] {
+            assert!(matches!(
+                parse_boot_info(&desc(flags)),
+                Rp1NoteState::Invalid
+            ));
+        }
+    }
+
+    #[test]
+    fn hal_note_fixture_uses_mailbox_flags_at_desc_72() {
+        for (flags, profile) in [
+            (RP1_MAILBOX_FLAG_ENABLE, Rp1MemoryProfile::Legacy),
+            (
+                RP1_MAILBOX_FLAG_ENABLE | RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1,
+                Rp1MemoryProfile::PrivateLayoutV1,
+            ),
+            (
+                RP1_MAILBOX_FLAG_ENABLE | RP1_MAILBOX_FLAG_SHARED_SRAM_V2,
+                Rp1MemoryProfile::SharedSramV2,
+            ),
+        ] {
+            let note = note_section(flags);
+            let desc = &note[16..];
+            assert_eq!(le32_opt(desc, 12), Some(0));
+            assert_eq!(le32_opt(desc, 72), Some(flags));
+            match parse_note_section(&note) {
+                Rp1NoteState::Valid(info) => assert!(info.memory_profile == profile),
+                Rp1NoteState::Missing | Rp1NoteState::Invalid => panic!("fixture rejected"),
+            }
+        }
+    }
+
+    #[test]
+    fn header_flags_are_rejected_separately_from_mailbox_flags() {
+        let mut wrong_header_flags = desc(RP1_MAILBOX_FLAG_SHARED_SRAM_V2);
+        put_u32(&mut wrong_header_flags, 12, RP1_MAILBOX_FLAG_SHARED_SRAM_V2);
+        assert!(matches!(
+            parse_boot_info(&wrong_header_flags),
+            Rp1NoteState::Invalid
+        ));
+    }
+
+    #[test]
+    fn v2_rejects_nonzero_legacy_image_contract_fields() {
+        let mut wrong_entry = desc(RP1_MAILBOX_FLAG_SHARED_SRAM_V2);
+        put_u32(&mut wrong_entry, 20, RP1_SHARED_SRAM_V2_LOAD_BASE | 1);
+        assert!(matches!(
+            parse_boot_info(&wrong_entry),
+            Rp1NoteState::Invalid
+        ));
+    }
+
+    #[test]
+    fn reserved_desc_words_are_rejected() {
+        let mut with_reserved = desc(0);
+        put_u32(&mut with_reserved, 144, 1);
+        assert!(matches!(
+            parse_boot_info(&with_reserved),
+            Rp1NoteState::Invalid
+        ));
+    }
+
+    #[test]
+    fn oversized_desc_tail_is_rejected() {
+        let mut oversized = [0u8; Rp1BootInfoV1::SIZE + 4];
+        oversized[..Rp1BootInfoV1::SIZE].copy_from_slice(&desc(0));
+        assert!(matches!(parse_boot_info(&oversized), Rp1NoteState::Invalid));
+    }
+
+    fn note_section(mailbox_flags: u32) -> [u8; 192] {
+        let mut note = [0u8; 192];
+        put_u32(&mut note, 0, RP1_NOTE_NAME.len() as u32);
+        put_u32(&mut note, 4, Rp1BootInfoV1::SIZE as u32);
+        put_u32(&mut note, 8, RP1_NOTE_TYPE_BOOT_V1);
+        note[12..16].copy_from_slice(RP1_NOTE_NAME.as_slice());
+        note[16..].copy_from_slice(&desc(mailbox_flags));
+        note
+    }
+
+    fn put_u16(out: &mut [u8], offset: usize, value: u16) {
+        out[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u32(out: &mut [u8], offset: usize, value: u32) {
+        out[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
 }

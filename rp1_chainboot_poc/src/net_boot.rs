@@ -11,12 +11,12 @@ use arch_hal::soc::bcm2712::rp1_gem::Rp1GemOptions;
 use io_api::ethernet::{EthernetFrameIo, MacAddr};
 use net::tftp;
 
-use crate::BootError;
 use crate::dhcp_boot::{self, DhcpError, NetworkBootLease};
 use crate::dtb_patch;
 use crate::linux;
 use crate::placement;
 use crate::rp1_dtb_policy::Rp1DtbPolicy;
+use crate::BootError;
 
 const TFTP_LOCAL_MAC: MacAddr = MacAddr([0x2c, 0xcf, 0x67, 0xc2, 0x9a, 0x58]);
 const TFTP_KERNEL_FILENAME: &str = "BCM2712.img";
@@ -348,10 +348,11 @@ fn boot_rp1_from_tftp(
     let (rp1_elf, policy) = load_rp1_elf_and_policy_from_tftp(gem, clock, lease, ports)?;
 
     let scratch = placement::rp1_scratch_slice();
-    let image = crate::rp1_image::build_from_rp1_elf(
+    let image = crate::rp1_image::build_from_rp1_elf_with_profile(
         &rp1_elf,
         scratch,
         crate::rp1_image::RP1_FALLBACK_STACK,
+        policy.memory_profile,
     )?;
     crate::logln!(
         "[RP1ELF] load_base=0x{:x} image_len={} entry=0x{:x} stack=0x{:x}",

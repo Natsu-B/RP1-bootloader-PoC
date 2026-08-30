@@ -1,6 +1,6 @@
 use rp1_abi::owner::{
-    DEV_DMA, DEV_GPIO, DEV_I2C0, DEV_I2C1, DEV_PIO0, DEV_PIO1, DEV_SPI0, DEV_TIMER, DEV_UART0,
-    DEV_UART1, bit,
+    bit, DEV_DMA, DEV_GPIO, DEV_I2C0, DEV_I2C1, DEV_PIO0, DEV_PIO1, DEV_SPI0, DEV_TIMER, DEV_UART0,
+    DEV_UART1,
 };
 
 use crate::BootError;
@@ -22,6 +22,7 @@ pub struct Rp1DtbPolicy {
     pub owner_linux: u64,
     pub owner_disabled: u64,
     pub source: Rp1DtbPolicySource,
+    pub memory_profile: crate::rp1_note::Rp1MemoryProfile,
 }
 
 #[derive(Clone, Copy)]
@@ -45,6 +46,7 @@ impl Rp1DtbPolicy {
             owner_linux: note.owner_linux,
             owner_disabled: note.owner_disabled,
             source: Rp1DtbPolicySource::Note,
+            memory_profile: note.memory_profile,
         };
         policy.validate()?;
         Ok(policy)
@@ -59,6 +61,7 @@ impl Rp1DtbPolicy {
             owner_linux: config.owner_linux,
             owner_disabled: config.owner_disabled,
             source: Rp1DtbPolicySource::Config,
+            memory_profile: crate::rp1_note::Rp1MemoryProfile::Legacy,
         };
         policy.validate()?;
         Ok(policy)
