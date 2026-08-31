@@ -366,6 +366,44 @@ fn boot_rp1_from_tftp(
     crate::logln!("[TFTP] Rp1Gem release before RP1 reload complete");
     crate::start_rp1_image(dtb, &image)?;
     crate::timer::delay_millis(10);
+    const PCIE_BASE: usize = 0x10_0012_0000;
+    const PCIE_STATUS: usize = PCIE_BASE + 0x4068;
+    const CONFIG_ADDRESS: usize = PCIE_BASE + 0x9000;
+    let status_before = unsafe { core::ptr::read_volatile(PCIE_STATUS as *const u32) };
+    if status_before & 0x30 == 0x30 {
+        crate::logln!(
+            "[RP1PCIE:delay10-auditonly] skipped link-up status=0x{:08x}",
+            status_before
+        );
+    } else {
+        let selector_before = unsafe { core::ptr::read_volatile(CONFIG_ADDRESS as *const u32) };
+        let audit = bcm2712::init_rp1_with_options(
+            dtb,
+            bcm2712::Rp1InitOptions {
+                mode: bcm2712::Rp1InitMode::AuditOnly,
+                strict: false,
+            },
+        );
+        let audit_error = audit.err();
+        let selector_after = unsafe { core::ptr::read_volatile(CONFIG_ADDRESS as *const u32) };
+        unsafe {
+            core::ptr::write_volatile(CONFIG_ADDRESS as *mut u32, selector_before);
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        }
+        let selector_restored = unsafe { core::ptr::read_volatile(CONFIG_ADDRESS as *const u32) };
+        crate::logln!(
+            "[RP1PCIE:delay10-auditonly] status=0x{:08x} result_ok={} error={:?} cfg_before=0x{:08x} cfg_after=0x{:08x} cfg_restored=0x{:08x}",
+            status_before,
+            audit_error.is_none(),
+            audit_error,
+            selector_before,
+            selector_after,
+            selector_restored
+        );
+        if selector_restored != selector_before {
+            return Err(BootError::Rp1Pcie);
+        }
+    }
     Ok(policy)
 }
 
