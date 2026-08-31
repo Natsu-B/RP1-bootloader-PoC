@@ -25,6 +25,8 @@ mod linux;
 mod net_boot;
 mod panic;
 mod placement;
+#[cfg(feature = "rp1-bar2-rpc-proof")]
+mod rp1_bar2_rpc;
 mod rp1_bootstrap;
 mod rp1_config;
 mod rp1_dtb_policy;
@@ -144,6 +146,7 @@ pub enum BootError {
     El2HandoffPreparationFailure,
     AddressOverflow,
     Rp1Pcie,
+    Rp1Bar2Rpc,
     Rp1Gem,
     Tftp,
     MissingRp1Note,

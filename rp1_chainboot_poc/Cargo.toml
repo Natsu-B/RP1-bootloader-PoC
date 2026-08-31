@@ -13,6 +13,7 @@ continue-on-rp1-bootstrap-failure = []
 tftp-boot = []
 tftp-initramfs = ["tftp-boot"]
 rp1-gdb-debug-stub = ["log-uart"]
+rp1-bar2-rpc-proof = []
 log-uart = []
 log-semihosting = []
 

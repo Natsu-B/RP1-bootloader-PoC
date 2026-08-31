@@ -11,12 +11,12 @@ use arch_hal::soc::bcm2712::rp1_gem::Rp1GemOptions;
 use io_api::ethernet::{EthernetFrameIo, MacAddr};
 use net::tftp;
 
+use crate::BootError;
 use crate::dhcp_boot::{self, DhcpError, NetworkBootLease};
 use crate::dtb_patch;
 use crate::linux;
 use crate::placement;
 use crate::rp1_dtb_policy::Rp1DtbPolicy;
-use crate::BootError;
 
 const TFTP_LOCAL_MAC: MacAddr = MacAddr([0x2c, 0xcf, 0x67, 0xc2, 0x9a, 0x58]);
 const TFTP_KERNEL_FILENAME: &str = "BCM2712.img";
@@ -288,6 +288,10 @@ fn init_tftp_gem_with_label(
         crate::logln!("[TFTP] RP1 PCIe init ok");
     } else {
         crate::logln!("[TFTP] {} RP1 PCIe init ok", label);
+    }
+    #[cfg(feature = "rp1-bar2-rpc-proof")]
+    if label == "post-rp1-reload" {
+        crate::rp1_bar2_rpc::run_pre_linux_probe(&rp1)?;
     }
 
     let gem = Rp1Gem::init_from_rp1_config(&rp1, TFTP_LOCAL_MAC, Rp1GemOptions::default())
