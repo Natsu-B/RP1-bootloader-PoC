@@ -26,7 +26,8 @@ const CLOCK_PLL_SYS_PRI_PH: u32 = 6;
 const CLOCK_UART: u32 = 15;
 const STATUS_OK: u32 = 0;
 const EXPECTED_FEATURES: u32 = 0x3b;
-const EXPECTED_OPCODE_MASK: u32 = 0x7;
+const EXPECTED_PING_RESULT1: u32 = 0x7;
+const EXPECTED_CAPABILITIES_RESULT1: u32 = 0x200;
 const TIMEOUT_US: u64 = 250_000;
 
 const _: () = assert!(REQUEST_OFFSET == RPC_START);
@@ -71,7 +72,7 @@ pub fn run_pre_linux_probe(rp1: &Rp1Config) -> Result<(), BootError> {
     if ping.effective != 1
         || ping.physical != 1
         || ping.result0 != VERSION
-        || ping.result1 != EXPECTED_OPCODE_MASK
+        || ping.result1 != EXPECTED_PING_RESULT1
     {
         crate::logln!(
             "[RP1RPC] fail: ping payload effective=0x{:08x} physical=0x{:08x} result0=0x{:08x} result1=0x{:08x}",
@@ -91,16 +92,16 @@ pub fn run_pre_linux_probe(rp1: &Rp1Config) -> Result<(), BootError> {
     );
 
     let caps = client.call(2, OP_GET_CAPABILITIES, 0)?;
-    if caps.result0 != EXPECTED_FEATURES || caps.result1 != EXPECTED_OPCODE_MASK {
+    if caps.result0 != EXPECTED_FEATURES || caps.result1 != EXPECTED_CAPABILITIES_RESULT1 {
         crate::logln!(
-            "[RP1RPC] fail: caps payload features=0x{:08x} opcodes=0x{:08x}",
+            "[RP1RPC] fail: caps payload features=0x{:08x} result1=0x{:08x}",
             caps.result0,
             caps.result1
         );
         return Err(BootError::Rp1Bar2Rpc);
     }
     crate::logln!(
-        "[RP1RPC] caps ok features=0x{:08x} opcodes=0x{:08x}",
+        "[RP1RPC] caps ok features=0x{:08x} result1=0x{:08x}",
         caps.result0,
         caps.result1
     );
