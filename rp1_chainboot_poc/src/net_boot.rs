@@ -365,6 +365,7 @@ fn boot_rp1_from_tftp(
     unsafe { gem.release_after_quiesce() };
     crate::logln!("[TFTP] Rp1Gem release before RP1 reload complete");
     crate::start_rp1_image(dtb, &image)?;
+    crate::timer::delay_millis(10);
     Ok(policy)
 }
 
