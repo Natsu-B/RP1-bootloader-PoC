@@ -126,13 +126,7 @@ fn download_rp1_policy_and_reload_if_needed(
         return Ok(None);
     }
 
-    let policy = boot_rp1_from_tftp(dtb, gem, clock, lease, ports)?;
-    // SAFETY: the pre-reload GEM is not used after this point. The full reload
-    // path leaves this scope and obtains a fresh singleton instance before any
-    // further network I/O.
-    unsafe { gem.release_after_quiesce() };
-    crate::logln!("[TFTP] dropping pre-reload GEM state");
-    Ok(Some(policy))
+    boot_rp1_from_tftp(dtb, gem, clock, lease, ports).map(Some)
 }
 
 fn boot_kernel_from_tftp_with_lease(
@@ -366,8 +360,10 @@ fn boot_rp1_from_tftp(
         image.stack
     );
 
-    gem.quiesce();
-    crate::logln!("[TFTP] Rp1Gem quiesce before RP1 reload complete");
+    // SAFETY: all downloads are complete and no caller uses the pre-reload GEM
+    // after this point. Release before RP1 reset so no stale GEM MMIO follows it.
+    unsafe { gem.release_after_quiesce() };
+    crate::logln!("[TFTP] Rp1Gem release before RP1 reload complete");
     crate::start_rp1_image(dtb, &image)?;
     Ok(policy)
 }
