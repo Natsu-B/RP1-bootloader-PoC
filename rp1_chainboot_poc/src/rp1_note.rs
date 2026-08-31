@@ -25,6 +25,16 @@ pub enum Rp1MemoryProfile {
     SharedSramV2,
 }
 
+impl Rp1MemoryProfile {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::PrivateLayoutV1 => "private-layout-v1",
+            Self::SharedSramV2 => "shared-sram-v2",
+        }
+    }
+}
+
 pub const RP1_MAILBOX_FLAG_ENABLE: u32 = 1 << 0;
 pub const RP1_MAILBOX_FLAG_PRIVATE_LAYOUT_V1: u32 = 1 << 1;
 pub const RP1_MAILBOX_FLAG_SHARED_SRAM_V2: u32 = 1 << 2;

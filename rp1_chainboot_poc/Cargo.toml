@@ -15,6 +15,7 @@ tftp-initramfs = ["tftp-boot"]
 rp1-gdb-debug-stub = ["log-uart"]
 rp1-bar2-rpc-proof = []
 rp1-linux-handoff-no-gem = ["tftp-boot"]
+rp1-linux-scmi-uart-clock = ["rp1-linux-handoff-no-gem"]
 log-uart = []
 log-semihosting = []
 
