@@ -286,6 +286,8 @@ fn init_tftp_gem_with_label(
     #[cfg(feature = "rp1-bar2-rpc-proof")]
     if label == "post-rp1-reload" {
         crate::rp1_bar2_rpc::run_pre_linux_probe(&rp1)?;
+        crate::logln!("[RP1RPC] bounded proof complete; terminal hold");
+        crate::halt();
     }
 
     let gem = Rp1Gem::init_from_rp1_config(&rp1, TFTP_LOCAL_MAC, Rp1GemOptions::default())
