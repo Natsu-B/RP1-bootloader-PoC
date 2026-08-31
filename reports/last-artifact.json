@@ -5,5 +5,6 @@
   "elf_sha256": "312d517e80aa1aa34646a52d0e92f2068e058e0bfdd2f7522ba175c2acd1b23a",
   "build_log_path": "reports/build.log",
   "build_log_sha256": "5df7bc464ef35288cd296849c32afd559a5f5c77cd2bc1bca769e1d42f124bbd",
+  "build_log_status": "local-untracked",
   "build_command": "cargo +nightly-2026-08-27 build -Z build-std=core,alloc,compiler_builtins -Z build-std-features=compiler-builtins-mem -p rp1_chainboot_poc --target aarch64-unknown-none-softfloat --release --features rp1-linux-scmi-uart-clock"
 }
