@@ -79,6 +79,15 @@ pub fn boot_from_tftp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
 }
 
 pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
+    #[cfg(feature = "rp1-linux-handoff-no-gem")]
+    return boot_from_tftp_no_gem_handoff(dtb);
+
+    #[cfg(not(feature = "rp1-linux-handoff-no-gem"))]
+    return boot_from_tftp_with_gem_reinit(dtb);
+}
+
+#[cfg(not(feature = "rp1-linux-handoff-no-gem"))]
+fn boot_from_tftp_with_gem_reinit(dtb: &dtb::DtbParser) -> Result<(), BootError> {
     let clock = TimerClock::new();
     let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
     let mut ports = TftpSessionPorts::new();
@@ -110,6 +119,136 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
     crate::logln!("[TFTP] reinitializing GEM after RP1 reload");
     let gem = init_tftp_gem_with_label(dtb, "post-rp1-reload")?;
     boot_kernel_from_tftp_with_lease(dtb, &mut *gem, &clock, &lease, rp1_policy, &mut ports)
+}
+
+#[cfg(feature = "rp1-linux-handoff-no-gem")]
+fn boot_from_tftp_no_gem_handoff(dtb: &dtb::DtbParser) -> Result<(), BootError> {
+    let (rp1_image, kernel_entry, patched_dtb_addr) = {
+        let clock = TimerClock::new();
+        let mut ports = TftpSessionPorts::new();
+        let gem = init_tftp_gem(dtb)?;
+        let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
+            crate::logln!("[DHCP] failed: {:?}", err);
+            map_dhcp_error(err)
+        })?;
+        let (rp1_elf, rp1_policy) =
+            load_rp1_elf_and_policy_from_tftp(&mut *gem, &clock, &lease, &mut ports)?;
+        let scratch = placement::rp1_scratch_slice();
+        let rp1_image = crate::rp1_image::build_from_rp1_elf_with_profile(
+            &rp1_elf,
+            scratch,
+            crate::rp1_image::RP1_FALLBACK_STACK,
+            rp1_policy.memory_profile,
+        )?;
+        drop(rp1_elf);
+        crate::logln!(
+            "[RP1ELF] preload load_base=0x{:x} image_len={} entry=0x{:x} stack=0x{:x}",
+            rp1_image.load_addr,
+            rp1_image.payload.len(),
+            rp1_image.entry,
+            rp1_image.stack
+        );
+
+        let (kernel_base, image) =
+            download_kernel_image_from_tftp(&mut *gem, &clock, &lease, &mut ports)?;
+        #[cfg(feature = "tftp-initramfs")]
+        let initramfs_len = download_initramfs(&mut *gem, &clock, &lease, &mut ports)?;
+        #[cfg(not(feature = "tftp-initramfs"))]
+        let initramfs_len = {
+            crate::logln!("[TFTP] initramfs disabled; patching an empty initrd range");
+            0
+        };
+        let initrd_start = if initramfs_len == 0 {
+            0
+        } else {
+            placement::INITRAMFS_LOAD_BASE
+        };
+        let initrd_end = initrd_start
+            .checked_add(initramfs_len)
+            .ok_or(BootError::AddressOverflow)?;
+        let patched_dtb = dtb_patch::patch_dtb_for_linux(
+            dtb,
+            placement::DTB_COPY_BASE,
+            placement::DTB_MAX_SIZE,
+            initrd_start,
+            initrd_end,
+            None,
+            Some(&rp1_policy),
+        )?;
+
+        linux::clean_dcache_poc(kernel_base, image.image_size);
+        linux::clean_dcache_poc(initrd_start, initramfs_len);
+        linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
+        linux::invalidate_icache_all();
+
+        let daif = mask_daif_and_readback()?;
+        crate::logln!("[PHASE5] DAIF masked readback=0x{:x}", daif);
+        gem.quiesce();
+        let ncr = gem.diagnostic_snapshot().ncr;
+        const NCR_ACTIVITY_MASK: u32 = (1 << 2) | (1 << 3) | (1 << 9);
+        crate::logln!("[PHASE5] GEM bounded quiesce NCR=0x{:08x}", ncr);
+        if ncr & NCR_ACTIVITY_MASK != 0 {
+            crate::logln!("[PHASE5] GEM quiesce readback failed");
+            return Err(BootError::Rp1Gem);
+        }
+        // SAFETY: bounded quiesce completed, NCR RE/TE/TSTART read back clear,
+        // and the lexical scope ends before RP1 reset. This is the sole release.
+        unsafe { gem.release_after_quiesce() };
+        crate::logln!("[PHASE5] pre-reset GEM release complete");
+
+        (rp1_image, image.entry, patched_dtb.addr)
+    };
+
+    crate::logln!("[PHASE5] post-reset no-GEM path begin");
+    if let Err(err) = crate::start_rp1_image(dtb, &rp1_image) {
+        crate::fatal(err);
+    }
+    crate::timer::delay_millis(10);
+    if let Err(err) = audit_rp1_pcie_after_reload(dtb) {
+        crate::fatal(err);
+    }
+    let rp1 = match bcm2712::init_rp1_with_options(
+        dtb,
+        bcm2712::Rp1InitOptions {
+            mode: bcm2712::Rp1InitMode::Auto,
+            strict: false,
+        },
+    ) {
+        Ok(rp1) => rp1,
+        Err(err) => {
+            crate::logln!("[PHASE5] post-reset RP1 endpoint init failed: {:?}", err);
+            crate::fatal(BootError::Rp1Pcie);
+        }
+    };
+    crate::logln!("[PHASE5] post-reset RP1 endpoint init ok");
+    if let Err(err) = crate::rp1_bar2_rpc::run_pre_linux_probe(&rp1) {
+        crate::fatal(err);
+    }
+    crate::logln!("[PHASE5] post-reset BAR2 RPC pass; jumping to preloaded Linux");
+
+    // SAFETY: kernel/DTB/initramfs were bounded, patched, verified, and cache
+    // cleaned before the sole GEM release; the post-reset path used no GEM.
+    unsafe { linux::jump_to_linux_el2(kernel_entry, patched_dtb_addr) }
+}
+
+#[cfg(feature = "rp1-linux-handoff-no-gem")]
+fn mask_daif_and_readback() -> Result<u64, BootError> {
+    let daif: u64;
+    // SAFETY: mask-only PSTATE update followed by architectural barriers and readback.
+    unsafe {
+        core::arch::asm!(
+            "msr daifset, #0xf",
+            "dsb sy",
+            "isb",
+            "mrs {daif}, DAIF",
+            daif = out(reg) daif,
+            options(nostack, preserves_flags)
+        );
+    }
+    if daif & 0x3c0 != 0x3c0 {
+        return Err(BootError::El2HandoffPreparationFailure);
+    }
+    Ok(daif)
 }
 
 fn download_rp1_policy_and_reload_if_needed(
@@ -159,30 +298,7 @@ fn boot_kernel_from_tftp_with_lease(
     );
     let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
 
-    let kernel_cfg = tftp_config(lease, TFTP_KERNEL_FILENAME, ports.alloc());
-    crate::logln!(
-        "[TFTP] rrq file={} local_port={}",
-        TFTP_KERNEL_FILENAME,
-        kernel_cfg.local_port
-    );
-    crate::logln!("[TFTP] kernel download start {}", TFTP_KERNEL_FILENAME);
-    let mut kernel_staging = vec![0u8; TFTP_KERNEL_STAGING_MAX];
-    let kernel_len = match tftp::download_into(gem, clock, &kernel_cfg, &mut kernel_staging) {
-        Ok(len) => len,
-        Err(err) => return gem_failure(gem, lease, "kernel download", err),
-    };
-    crate::logln!(
-        "[TFTP] kernel download complete addr=0x{:x} len={}",
-        placement::KERNEL_LOAD_BASE,
-        kernel_len
-    );
-    let kernel = crate::gzip::decompress_kernel_if_needed(
-        &kernel_staging[..kernel_len],
-        placement::KERNEL_LOAD_BASE,
-        placement::KERNEL_MAX_SIZE,
-    )?;
-    drop(kernel_staging);
-    let image = linux::validate_arm64_image(kernel.base, kernel.len, placement::KERNEL_MAX_SIZE)?;
+    let (kernel_base, image) = download_kernel_image_from_tftp(gem, clock, lease, ports)?;
 
     #[cfg(feature = "tftp-initramfs")]
     let initramfs_len = download_initramfs(gem, clock, lease, ports)?;
@@ -239,7 +355,7 @@ fn boot_kernel_from_tftp_with_lease(
     // not used after release; Linux will probe and own the device next.
     unsafe { gem.release_after_linux_handoff() };
     crate::logln!("[TFTP] Rp1Gem Linux handoff cleanup complete");
-    linux::clean_dcache_poc(kernel.base, image.image_size);
+    linux::clean_dcache_poc(kernel_base, image.image_size);
     linux::clean_dcache_poc(initrd_start, initramfs_len);
     linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
     linux::invalidate_icache_all();
@@ -248,6 +364,39 @@ fn boot_kernel_from_tftp_with_lease(
     // DTB was patched into its reserved range, GEM was released for Linux, and
     // cache maintenance completed before the terminal EL2 handoff.
     unsafe { linux::jump_to_linux_el2(image.entry, patched_dtb.addr) }
+}
+
+fn download_kernel_image_from_tftp(
+    gem: &mut Rp1Gem,
+    clock: &TimerClock,
+    lease: &NetworkBootLease,
+    ports: &mut TftpSessionPorts,
+) -> Result<(usize, linux::LinuxImage), BootError> {
+    let kernel_cfg = tftp_config(lease, TFTP_KERNEL_FILENAME, ports.alloc());
+    crate::logln!(
+        "[TFTP] rrq file={} local_port={}",
+        TFTP_KERNEL_FILENAME,
+        kernel_cfg.local_port
+    );
+    crate::logln!("[TFTP] kernel download start {}", TFTP_KERNEL_FILENAME);
+    let mut kernel_staging = vec![0u8; TFTP_KERNEL_STAGING_MAX];
+    let kernel_len = match tftp::download_into(gem, clock, &kernel_cfg, &mut kernel_staging) {
+        Ok(len) => len,
+        Err(err) => return gem_failure(gem, lease, "kernel download", err),
+    };
+    crate::logln!(
+        "[TFTP] kernel download complete addr=0x{:x} len={}",
+        placement::KERNEL_LOAD_BASE,
+        kernel_len
+    );
+    let kernel = crate::gzip::decompress_kernel_if_needed(
+        &kernel_staging[..kernel_len],
+        placement::KERNEL_LOAD_BASE,
+        placement::KERNEL_MAX_SIZE,
+    )?;
+    drop(kernel_staging);
+    let image = linux::validate_arm64_image(kernel.base, kernel.len, placement::KERNEL_MAX_SIZE)?;
+    Ok((kernel.base, image))
 }
 
 fn map_dhcp_error(err: DhcpError) -> BootError {
@@ -368,6 +517,11 @@ fn boot_rp1_from_tftp(
     crate::logln!("[TFTP] Rp1Gem release before RP1 reload complete");
     crate::start_rp1_image(dtb, &image)?;
     crate::timer::delay_millis(10);
+    audit_rp1_pcie_after_reload(dtb)?;
+    Ok(policy)
+}
+
+fn audit_rp1_pcie_after_reload(dtb: &dtb::DtbParser) -> Result<(), BootError> {
     const PCIE_BASE: usize = 0x10_0012_0000;
     const PCIE_STATUS: usize = PCIE_BASE + 0x4068;
     const CONFIG_ADDRESS: usize = PCIE_BASE + 0x9000;
@@ -406,7 +560,7 @@ fn boot_rp1_from_tftp(
             return Err(BootError::Rp1Pcie);
         }
     }
-    Ok(policy)
+    Ok(())
 }
 
 fn load_rp1_policy_from_tftp(

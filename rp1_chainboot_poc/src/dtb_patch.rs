@@ -1,5 +1,7 @@
 use alloc::vec::Vec;
 
+#[cfg(feature = "rp1-linux-handoff-no-gem")]
+use dtb::NodeQueryExt;
 use dtb::{
     DeviceTree, DeviceTreeEditExt, DeviceTreeOwned, DeviceTreeQueryExt, NameRef, NodeEditExt,
     ValueRef,
@@ -7,6 +9,13 @@ use dtb::{
 
 use crate::BootError;
 use crate::rp1_dtb_policy::{RP1_DEVICE_DTB_NODES, Rp1DtbPolicy};
+
+#[cfg(feature = "rp1-linux-handoff-no-gem")]
+const RP1_ETHERNET_DTB_PATHS: &[&str] = &[
+    "/axi/pcie@1000120000/rp1/ethernet@100000",
+    "/axi/pcie@120000/rp1/ethernet@100000",
+    "/soc/rp1/ethernet@100000",
+];
 
 pub struct PatchedDtb {
     pub addr: usize,
@@ -50,6 +59,8 @@ pub fn patch_dtb_for_linux(
     } else {
         crate::logln!("[DTB] RP1 policy absent");
     }
+    #[cfg(feature = "rp1-linux-handoff-no-gem")]
+    let disabled_ethernet_nodes = disable_rp1_ethernet(&mut tree)?;
     let dtb = tree.into_dtb_box().map_err(|_| BootError::DtbPatch)?;
     let aligned = output_base & 7 == 0;
     crate::logln!(
@@ -66,6 +77,13 @@ pub fn patch_dtb_for_linux(
     unsafe {
         core::ptr::copy_nonoverlapping(dtb.as_ptr(), output_base as *mut u8, dtb.len());
     }
+    #[cfg(feature = "rp1-linux-handoff-no-gem")]
+    {
+        // SAFETY: the bounded destination was populated immediately above.
+        let handoff_dtb =
+            unsafe { core::slice::from_raw_parts(output_base as *const u8, dtb.len()) };
+        verify_serialized_rp1_ethernet_disabled(handoff_dtb, disabled_ethernet_nodes)?;
+    }
     crate::logln!(
         "[DTB] /chosen linux,initrd-start=0x{:x}, linux,initrd-end=0x{:x}",
         initrd_start,
@@ -75,6 +93,57 @@ pub fn patch_dtb_for_linux(
         addr: output_base,
         len: dtb.len(),
     })
+}
+
+#[cfg(feature = "rp1-linux-handoff-no-gem")]
+fn disable_rp1_ethernet(tree: &mut DeviceTreeOwned<'_>) -> Result<usize, BootError> {
+    let mut disabled = 0;
+    for path in RP1_ETHERNET_DTB_PATHS {
+        let Some(node_id) = tree.find_node_by_path(path) else {
+            continue;
+        };
+        tree.node_mut(node_id)
+            .ok_or(BootError::DtbPatch)?
+            .set_property(
+                NameRef::Owned("status".into()),
+                ValueRef::Owned(status_prop("disabled")),
+            );
+        disabled += 1;
+        crate::logln!("[DTB] Phase5 disable {}", path);
+    }
+    if disabled == 0 {
+        crate::logln!("[DTB] Phase5 RP1 ethernet@100000 node not found");
+        return Err(BootError::Rp1DtbNodeNotFound);
+    }
+    Ok(disabled)
+}
+
+#[cfg(feature = "rp1-linux-handoff-no-gem")]
+fn verify_serialized_rp1_ethernet_disabled(dtb: &[u8], expected: usize) -> Result<(), BootError> {
+    let tree = DeviceTree::from_dtb(dtb).map_err(|_| BootError::DtbPatch)?;
+    let mut verified = 0;
+    for path in RP1_ETHERNET_DTB_PATHS {
+        let Some(node_id) = tree.find_node_by_path(path) else {
+            continue;
+        };
+        let status = tree
+            .node(node_id)
+            .and_then(|node| node.property("status"))
+            .map(|property| property.value.as_slice());
+        if status != Some(b"disabled\0".as_slice()) {
+            crate::logln!("[DTB] Phase5 ethernet status verify failed {}", path);
+            return Err(BootError::DtbPatch);
+        }
+        verified += 1;
+    }
+    if verified != expected {
+        return Err(BootError::DtbPatch);
+    }
+    crate::logln!(
+        "[DTB] Phase5 serialized ethernet status=disabled nodes={}",
+        verified
+    );
+    Ok(())
 }
 
 fn apply_rp1_policy(

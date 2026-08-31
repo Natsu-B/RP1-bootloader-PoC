@@ -25,7 +25,7 @@ mod linux;
 mod net_boot;
 mod panic;
 mod placement;
-#[cfg(feature = "rp1-bar2-rpc-proof")]
+#[cfg(any(feature = "rp1-bar2-rpc-proof", feature = "rp1-linux-handoff-no-gem"))]
 mod rp1_bar2_rpc;
 mod rp1_bootstrap;
 mod rp1_config;
@@ -97,6 +97,19 @@ compile_error!("features `log-uart` and `log-semihosting` are mutually exclusive
 
 #[cfg(not(any(feature = "log-uart", feature = "log-semihosting")))]
 compile_error!("select exactly one log backend feature: `log-uart` or `log-semihosting`");
+
+#[cfg(all(
+    feature = "rp1-linux-handoff-no-gem",
+    any(
+        feature = "skip-rp1-reload",
+        feature = "continue-on-rp1-bootstrap-failure",
+        feature = "rp1-gdb-debug-stub",
+        feature = "rp1-bar2-rpc-proof"
+    )
+))]
+compile_error!(
+    "`rp1-linux-handoff-no-gem` is incompatible with skip-reload, continue-on-failure, GDB, and terminal RPC proof features"
+);
 
 global_asm!(
     r#"
