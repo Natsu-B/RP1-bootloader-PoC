@@ -29,6 +29,7 @@ const EXPECTED_FEATURES: u32 = 0x3b;
 const EXPECTED_PING_RESULT1: u32 = 0x7;
 const EXPECTED_CAPABILITIES_RESULT1: u32 = 0x200;
 const TIMEOUT_US: u64 = 250_000;
+const READY_TIMEOUT_US: u64 = 1_000_000;
 
 const _: () = assert!(REQUEST_OFFSET == RPC_START);
 const _: () = assert!(REQUEST_OFFSET + SLOT_WORDS * 4 == RESPONSE_OFFSET);
@@ -139,13 +140,33 @@ enum Slot {
 
 impl RpcClient {
     fn check_ready_and_idle(&self) -> Result<(), BootError> {
-        if self.read(Slot::Response, 0) != RESPONSE_MAGIC
-            || self.read(Slot::Response, 1) != VERSION
-            || self.read(Slot::Response, 2) != HEADER_WORDS
-            || self.read(Slot::Response, 3) != TOTAL_WORDS
-        {
-            crate::logln!("[RP1RPC] fail: idle response header not ready");
-            return Err(BootError::Rp1Bar2Rpc);
+        let deadline = now_ticks().wrapping_add(timeout_ticks(READY_TIMEOUT_US));
+        loop {
+            let magic = self.read(Slot::Response, 0);
+            if magic == RESPONSE_MAGIC {
+                dmb_sy();
+            }
+            let version = self.read(Slot::Response, 1);
+            let header_words = self.read(Slot::Response, 2);
+            let total_words = self.read(Slot::Response, 3);
+            if magic == RESPONSE_MAGIC
+                && version == VERSION
+                && header_words == HEADER_WORDS
+                && total_words == TOTAL_WORDS
+            {
+                break;
+            }
+            if now_ticks().wrapping_sub(deadline) < u64::MAX / 2 {
+                crate::logln!(
+                    "[RP1RPC] fail: response header timeout magic=0x{:08x} version={} header={} total={}",
+                    magic,
+                    version,
+                    header_words,
+                    total_words
+                );
+                return Err(BootError::Rp1Bar2Rpc);
+            }
+            core::hint::spin_loop();
         }
         self.require_idle("initial")
     }
@@ -189,7 +210,7 @@ impl RpcClient {
             return Err(BootError::Rp1Bar2Rpc);
         }
 
-        let deadline = now_ticks().wrapping_add(timeout_ticks());
+        let deadline = now_ticks().wrapping_add(timeout_ticks(TIMEOUT_US));
         loop {
             let owner = self.read(Slot::Response, OWNER_WORD);
             if owner == 1 {
@@ -222,10 +243,13 @@ impl RpcClient {
     }
 
     fn wait_request_clear(&self, sequence: u32) -> Result<(), BootError> {
-        let deadline = now_ticks().wrapping_add(timeout_ticks());
+        let deadline = now_ticks().wrapping_add(timeout_ticks(TIMEOUT_US));
         while self.read(Slot::Request, OWNER_WORD) != 0 {
             if now_ticks().wrapping_sub(deadline) < u64::MAX / 2 {
-                crate::logln!("[RP1RPC] fail: request owner clear timeout seq={}", sequence);
+                crate::logln!(
+                    "[RP1RPC] fail: request owner clear timeout seq={}",
+                    sequence
+                );
                 return Err(BootError::Rp1Bar2Rpc);
             }
         }
@@ -320,8 +344,8 @@ fn now_ticks() -> u64 {
     arch_timer::read_counter()
 }
 
-fn timeout_ticks() -> u64 {
-    core::cmp::max(1, crate::timer::counter_frequency_hz() / 1_000_000) * TIMEOUT_US
+fn timeout_ticks(timeout_us: u64) -> u64 {
+    core::cmp::max(1, crate::timer::counter_frequency_hz() / 1_000_000) * timeout_us
 }
 
 fn dmb_sy() {
