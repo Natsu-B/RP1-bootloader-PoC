@@ -104,9 +104,7 @@ fn boot_from_tftp_with_gem_reinit(dtb: &dtb::DtbParser) -> Result<(), BootError>
         })?;
         let rp1_policy =
             download_rp1_policy_and_reload_if_needed(dtb, &mut *gem, &clock, &lease, &mut ports)?;
-        return boot_kernel_from_tftp_with_lease(
-            dtb, &mut *gem, &clock, &lease, rp1_policy, &mut ports,
-        );
+        return boot_kernel_from_tftp_with_lease(dtb, gem, &clock, &lease, rp1_policy, &mut ports);
     }
 
     let (lease, rp1_policy) = {
@@ -122,7 +120,7 @@ fn boot_from_tftp_with_gem_reinit(dtb: &dtb::DtbParser) -> Result<(), BootError>
 
     crate::logln!("[TFTP] reinitializing GEM after RP1 reload");
     let gem = init_tftp_gem_with_label(dtb, "post-rp1-reload")?;
-    boot_kernel_from_tftp_with_lease(dtb, &mut *gem, &clock, &lease, rp1_policy, &mut ports)
+    boot_kernel_from_tftp_with_lease(dtb, gem, &clock, &lease, rp1_policy, &mut ports)
 }
 
 #[cfg(feature = "rp1-linux-handoff-no-gem")]
@@ -130,7 +128,7 @@ fn boot_from_tftp_no_gem_handoff(dtb: &dtb::DtbParser) -> Result<(), BootError> 
     let (rp1_image, kernel_entry, patched_dtb_addr) = {
         let clock = TimerClock::new();
         let mut ports = TftpSessionPorts::new();
-        let gem = init_tftp_gem(dtb)?;
+        let mut gem = init_tftp_gem(dtb)?;
         let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
             crate::logln!("[DHCP] failed: {:?}", err);
             map_dhcp_error(err)
@@ -155,7 +153,14 @@ fn boot_from_tftp_no_gem_handoff(dtb: &dtb::DtbParser) -> Result<(), BootError> 
 
         let (kernel_base, image) =
             download_kernel_image_from_tftp(&mut *gem, &clock, &lease, &mut ports)?;
-        #[cfg(feature = "tftp-initramfs")]
+        #[cfg(feature = "tftp-initramfs-split")]
+        let initramfs_len = {
+            let (len, refreshed_gem) =
+                download_split_initramfs(dtb, gem, &clock, &lease, &mut ports)?;
+            gem = refreshed_gem;
+            len
+        };
+        #[cfg(all(feature = "tftp-initramfs", not(feature = "tftp-initramfs-split")))]
         let initramfs_len = download_initramfs(&mut *gem, &clock, &lease, &mut ports)?;
         #[cfg(not(feature = "tftp-initramfs"))]
         let initramfs_len = {
@@ -274,7 +279,7 @@ fn download_rp1_policy_and_reload_if_needed(
 
 fn boot_kernel_from_tftp_with_lease(
     dtb: &dtb::DtbParser,
-    gem: &mut Rp1Gem,
+    mut gem: &'static mut Rp1Gem,
     clock: &TimerClock,
     lease: &NetworkBootLease,
     mut rp1_policy: Option<Rp1DtbPolicy>,
@@ -302,10 +307,16 @@ fn boot_kernel_from_tftp_with_lease(
     );
     let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
 
-    let (kernel_base, image) = download_kernel_image_from_tftp(gem, clock, lease, ports)?;
+    let (kernel_base, image) = download_kernel_image_from_tftp(&mut *gem, clock, lease, ports)?;
 
-    #[cfg(feature = "tftp-initramfs")]
-    let initramfs_len = download_initramfs(gem, clock, lease, ports)?;
+    #[cfg(feature = "tftp-initramfs-split")]
+    let initramfs_len = {
+        let (len, refreshed_gem) = download_split_initramfs(dtb, gem, clock, lease, ports)?;
+        gem = refreshed_gem;
+        len
+    };
+    #[cfg(all(feature = "tftp-initramfs", not(feature = "tftp-initramfs-split")))]
+    let initramfs_len = download_initramfs(&mut *gem, clock, lease, ports)?;
     #[cfg(not(feature = "tftp-initramfs"))]
     let initramfs_len = {
         crate::logln!("[TFTP] initramfs disabled; patching an empty initrd range");
@@ -321,7 +332,7 @@ fn boot_kernel_from_tftp_with_lease(
         .ok_or(BootError::AddressOverflow)?;
 
     if skip_rp1_reload {
-        rp1_policy = Some(load_rp1_policy_from_tftp(gem, clock, lease, ports)?);
+        rp1_policy = Some(load_rp1_policy_from_tftp(&mut *gem, clock, lease, ports)?);
         crate::logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
     }
 
@@ -607,94 +618,102 @@ fn load_rp1_elf_and_policy_from_tftp(
     Ok((rp1_elf, policy))
 }
 
-#[cfg(feature = "tftp-initramfs")]
+#[cfg(all(feature = "tftp-initramfs", not(feature = "tftp-initramfs-split")))]
 fn download_initramfs(
     gem: &mut Rp1Gem,
     clock: &TimerClock,
     lease: &NetworkBootLease,
     ports: &mut TftpSessionPorts,
 ) -> Result<usize, BootError> {
-    #[cfg(feature = "tftp-initramfs-split")]
-    {
-        let output = physical_output(
+    let config = tftp_config(lease, TFTP_INITRAMFS_FILENAME, ports.alloc());
+    crate::logln!(
+        "[TFTP] rrq file={} local_port={}",
+        TFTP_INITRAMFS_FILENAME,
+        config.local_port
+    );
+    crate::logln!(
+        "[TFTP] initramfs download start {}",
+        TFTP_INITRAMFS_FILENAME
+    );
+    let len = match tftp::download_into(
+        gem,
+        clock,
+        &config,
+        physical_output(
             placement::INITRAMFS_LOAD_BASE,
-            TFTP_INITRAMFS_PART_MAX * TFTP_INITRAMFS_PARTS.len(),
-        );
-        let mut written = 0usize;
-        for (index, filename) in TFTP_INITRAMFS_PARTS.iter().enumerate() {
-            let end = written
-                .checked_add(TFTP_INITRAMFS_PART_MAX)
-                .ok_or(BootError::AddressOverflow)?;
-            let config = tftp_config(lease, filename, ports.alloc());
-            crate::logln!(
-                "[TFTP] initramfs part={} rrq file={} local_port={}",
-                index,
-                filename,
-                config.local_port
-            );
-            let len = match tftp::download_into(gem, clock, &config, &mut output[written..end]) {
-                Ok(len) => len,
-                Err(err) => return gem_failure(gem, lease, "initramfs part download", err),
-            };
-            if len == 0
-                || (index + 1 < TFTP_INITRAMFS_PARTS.len() && len != TFTP_INITRAMFS_PART_MAX)
-            {
-                crate::logln!(
-                    "[TFTP] initramfs part={} invalid len={} expected={}",
-                    index,
-                    len,
-                    TFTP_INITRAMFS_PART_MAX
-                );
-                return Err(BootError::Tftp);
-            }
-            written = written.checked_add(len).ok_or(BootError::AddressOverflow)?;
-            crate::logln!(
-                "[TFTP] initramfs part={} complete len={} total={}",
-                index,
-                len,
-                written
-            );
-            drain_rx(gem, clock, 200_000);
-        }
-        crate::logln!(
-            "[TFTP] initramfs split download complete addr=0x{:x} len={}",
-            placement::INITRAMFS_LOAD_BASE,
-            written
-        );
-        return Ok(written);
-    }
+            placement::INITRAMFS_MAX_SIZE,
+        ),
+    ) {
+        Ok(len) => len,
+        Err(err) => return gem_failure(gem, lease, "initramfs download", err),
+    };
+    crate::logln!(
+        "[TFTP] initramfs download complete addr=0x{:x} len={}",
+        placement::INITRAMFS_LOAD_BASE,
+        len
+    );
+    Ok(len)
+}
 
-    #[cfg(not(feature = "tftp-initramfs-split"))]
-    {
-        let config = tftp_config(lease, TFTP_INITRAMFS_FILENAME, ports.alloc());
+#[cfg(feature = "tftp-initramfs-split")]
+fn download_split_initramfs(
+    dtb: &dtb::DtbParser,
+    mut gem: &'static mut Rp1Gem,
+    clock: &TimerClock,
+    lease: &NetworkBootLease,
+    ports: &mut TftpSessionPorts,
+) -> Result<(usize, &'static mut Rp1Gem), BootError> {
+    let output = physical_output(
+        placement::INITRAMFS_LOAD_BASE,
+        TFTP_INITRAMFS_PART_MAX * TFTP_INITRAMFS_PARTS.len(),
+    );
+    let mut written = 0usize;
+    for (index, filename) in TFTP_INITRAMFS_PARTS.iter().enumerate() {
+        let end = written
+            .checked_add(TFTP_INITRAMFS_PART_MAX)
+            .ok_or(BootError::AddressOverflow)?;
+        let config = tftp_config(lease, filename, ports.alloc());
         crate::logln!(
-            "[TFTP] rrq file={} local_port={}",
-            TFTP_INITRAMFS_FILENAME,
+            "[TFTP] initramfs part={} rrq file={} local_port={}",
+            index,
+            filename,
             config.local_port
         );
-        crate::logln!(
-            "[TFTP] initramfs download start {}",
-            TFTP_INITRAMFS_FILENAME
-        );
-        let len = match tftp::download_into(
-            gem,
-            clock,
-            &config,
-            physical_output(
-                placement::INITRAMFS_LOAD_BASE,
-                placement::INITRAMFS_MAX_SIZE,
-            ),
-        ) {
+        let len = match tftp::download_into(&mut *gem, clock, &config, &mut output[written..end]) {
             Ok(len) => len,
-            Err(err) => return gem_failure(gem, lease, "initramfs download", err),
+            Err(err) => return gem_failure(&mut *gem, lease, "initramfs part download", err),
         };
+        if len == 0 || (index + 1 < TFTP_INITRAMFS_PARTS.len() && len != TFTP_INITRAMFS_PART_MAX) {
+            crate::logln!(
+                "[TFTP] initramfs part={} invalid len={} expected={}",
+                index,
+                len,
+                TFTP_INITRAMFS_PART_MAX
+            );
+            return Err(BootError::Tftp);
+        }
+        written = written.checked_add(len).ok_or(BootError::AddressOverflow)?;
         crate::logln!(
-            "[TFTP] initramfs download complete addr=0x{:x} len={}",
-            placement::INITRAMFS_LOAD_BASE,
-            len
+            "[TFTP] initramfs part={} complete len={} total={}",
+            index,
+            len,
+            written
         );
-        Ok(len)
+        if index + 1 < TFTP_INITRAMFS_PARTS.len() {
+            drain_rx(&mut *gem, clock, 200_000);
+            crate::logln!("[TFTP] reinitializing GEM after initramfs part={}", index);
+            // SAFETY: ownership of the unique reference stays in this function;
+            // the released reference is replaced before any further GEM access.
+            unsafe { gem.release_after_quiesce() };
+            gem = init_tftp_gem_with_label(dtb, "between-initramfs-parts")?;
+        }
     }
+    crate::logln!(
+        "[TFTP] initramfs split download complete addr=0x{:x} len={}",
+        placement::INITRAMFS_LOAD_BASE,
+        written
+    );
+    Ok((written, gem))
 }
 
 fn tftp_config<'a>(
