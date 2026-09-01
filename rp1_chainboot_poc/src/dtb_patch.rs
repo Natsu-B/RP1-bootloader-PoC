@@ -281,7 +281,7 @@ fn apply_scmi_uart_clock_coexistence(
     let sram_path =
         find_existing_path(tree, RP1_SRAM_NODE_PATHS).ok_or(BootError::Rp1DtbNodeNotFound)?;
     let mut shmem_path = String::from(sram_path);
-    shmem_path.push_str("/scmi-shmem@fb00");
+    shmem_path.push_str("/scmi-sram-section@fb00");
     let shmem_node_id = tree
         .get_or_create_node_by_path(&shmem_path)
         .map_err(|_| BootError::DtbPatch)?;
