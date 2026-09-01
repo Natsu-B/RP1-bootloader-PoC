@@ -23,9 +23,14 @@ const TFTP_KERNEL_FILENAME: &str = "BCM2712.img";
 const TFTP_RP1_ELF_FILENAME: &str = "RP1.elf";
 const TFTP_RP1_CONFIG_FILENAME: &str = "config_rp1.txt";
 const TFTP_FLUSH_FILENAME: &str = "__rp1_tftp_flush__";
-#[cfg(feature = "tftp-initramfs")]
+#[cfg(all(feature = "tftp-initramfs", not(feature = "tftp-initramfs-split")))]
 const TFTP_INITRAMFS_FILENAME: &str = "initramfs_2712";
-const TFTP_TIMEOUT_US: u64 = 10_000_000;
+#[cfg(feature = "tftp-initramfs-split")]
+const TFTP_INITRAMFS_PARTS: [&str; 3] =
+    ["initramfs_2712.0", "initramfs_2712.1", "initramfs_2712.2"];
+#[cfg(feature = "tftp-initramfs-split")]
+const TFTP_INITRAMFS_PART_MAX: usize = 8 * 1024 * 1024;
+const TFTP_TIMEOUT_US: u64 = 3_000_000;
 const TFTP_MAX_RETRIES: usize = 3;
 const TFTP_LOCAL_PORT_BASE: u16 = 49_152;
 const TFTP_RP1_ELF_STAGING_MAX: usize = 512 * 1024;
@@ -611,34 +616,87 @@ fn download_initramfs(
     lease: &NetworkBootLease,
     ports: &mut TftpSessionPorts,
 ) -> Result<usize, BootError> {
-    let config = tftp_config(lease, TFTP_INITRAMFS_FILENAME, ports.alloc());
-    crate::logln!(
-        "[TFTP] rrq file={} local_port={}",
-        TFTP_INITRAMFS_FILENAME,
-        config.local_port
-    );
-    crate::logln!(
-        "[TFTP] initramfs download start {}",
-        TFTP_INITRAMFS_FILENAME
-    );
-    let len = match tftp::download_into(
-        gem,
-        clock,
-        &config,
-        physical_output(
+    #[cfg(feature = "tftp-initramfs-split")]
+    {
+        let output = physical_output(
             placement::INITRAMFS_LOAD_BASE,
-            placement::INITRAMFS_MAX_SIZE,
-        ),
-    ) {
-        Ok(len) => len,
-        Err(err) => return gem_failure(gem, lease, "initramfs download", err),
-    };
-    crate::logln!(
-        "[TFTP] initramfs download complete addr=0x{:x} len={}",
-        placement::INITRAMFS_LOAD_BASE,
-        len
-    );
-    Ok(len)
+            TFTP_INITRAMFS_PART_MAX * TFTP_INITRAMFS_PARTS.len(),
+        );
+        let mut written = 0usize;
+        for (index, filename) in TFTP_INITRAMFS_PARTS.iter().enumerate() {
+            let end = written
+                .checked_add(TFTP_INITRAMFS_PART_MAX)
+                .ok_or(BootError::AddressOverflow)?;
+            let config = tftp_config(lease, filename, ports.alloc());
+            crate::logln!(
+                "[TFTP] initramfs part={} rrq file={} local_port={}",
+                index,
+                filename,
+                config.local_port
+            );
+            let len = match tftp::download_into(gem, clock, &config, &mut output[written..end]) {
+                Ok(len) => len,
+                Err(err) => return gem_failure(gem, lease, "initramfs part download", err),
+            };
+            if len == 0
+                || (index + 1 < TFTP_INITRAMFS_PARTS.len() && len != TFTP_INITRAMFS_PART_MAX)
+            {
+                crate::logln!(
+                    "[TFTP] initramfs part={} invalid len={} expected={}",
+                    index,
+                    len,
+                    TFTP_INITRAMFS_PART_MAX
+                );
+                return Err(BootError::Tftp);
+            }
+            written = written.checked_add(len).ok_or(BootError::AddressOverflow)?;
+            crate::logln!(
+                "[TFTP] initramfs part={} complete len={} total={}",
+                index,
+                len,
+                written
+            );
+            drain_rx(gem, clock, 200_000);
+        }
+        crate::logln!(
+            "[TFTP] initramfs split download complete addr=0x{:x} len={}",
+            placement::INITRAMFS_LOAD_BASE,
+            written
+        );
+        return Ok(written);
+    }
+
+    #[cfg(not(feature = "tftp-initramfs-split"))]
+    {
+        let config = tftp_config(lease, TFTP_INITRAMFS_FILENAME, ports.alloc());
+        crate::logln!(
+            "[TFTP] rrq file={} local_port={}",
+            TFTP_INITRAMFS_FILENAME,
+            config.local_port
+        );
+        crate::logln!(
+            "[TFTP] initramfs download start {}",
+            TFTP_INITRAMFS_FILENAME
+        );
+        let len = match tftp::download_into(
+            gem,
+            clock,
+            &config,
+            physical_output(
+                placement::INITRAMFS_LOAD_BASE,
+                placement::INITRAMFS_MAX_SIZE,
+            ),
+        ) {
+            Ok(len) => len,
+            Err(err) => return gem_failure(gem, lease, "initramfs download", err),
+        };
+        crate::logln!(
+            "[TFTP] initramfs download complete addr=0x{:x} len={}",
+            placement::INITRAMFS_LOAD_BASE,
+            len
+        );
+        Ok(len)
+    }
 }
 
 fn tftp_config<'a>(
