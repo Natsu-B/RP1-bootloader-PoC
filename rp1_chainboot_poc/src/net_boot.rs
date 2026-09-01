@@ -22,7 +22,6 @@ const TFTP_LOCAL_MAC: MacAddr = MacAddr([0x2c, 0xcf, 0x67, 0xc2, 0x9a, 0x58]);
 const TFTP_KERNEL_FILENAME: &str = "BCM2712.img";
 const TFTP_RP1_ELF_FILENAME: &str = "RP1.elf";
 const TFTP_RP1_CONFIG_FILENAME: &str = "config_rp1.txt";
-const TFTP_FLUSH_FILENAME: &str = "__rp1_tftp_flush__";
 #[cfg(all(feature = "tftp-initramfs", not(feature = "tftp-initramfs-split")))]
 const TFTP_INITRAMFS_FILENAME: &str = "initramfs_2712";
 #[cfg(feature = "tftp-initramfs-split")]
@@ -604,7 +603,6 @@ fn load_rp1_elf_and_policy_from_tftp(
         ports,
     )?;
     let policy = crate::enforce_rp1_elf_note_policy_with_config(&rp1_elf, config.as_deref())?;
-    flush_tftp_transfer(gem, clock, lease, ports)?;
     drain_rx(gem, clock, 200_000);
     Ok((rp1_elf, policy))
 }
@@ -764,32 +762,6 @@ fn download_tftp_optional(
     staging.truncate(len);
     crate::logln!("[TFTP] optional {} found len={}", filename, len);
     Ok(Some(staging))
-}
-
-fn flush_tftp_transfer(
-    gem: &mut Rp1Gem,
-    clock: &TimerClock,
-    lease: &NetworkBootLease,
-    ports: &mut TftpSessionPorts,
-) -> Result<(), BootError> {
-    match download_tftp_optional(
-        gem,
-        clock,
-        lease,
-        TFTP_FLUSH_FILENAME,
-        TFTP_RP1_CONFIG_STAGING_MAX,
-        ports,
-    ) {
-        Ok(Some(bytes)) => {
-            crate::logln!("[TFTP] flush consumed stale transfer len={}", bytes.len());
-            Ok(())
-        }
-        Ok(None) => {
-            crate::logln!("[TFTP] flush consumed server not-found response");
-            Ok(())
-        }
-        Err(err) => Err(err),
-    }
 }
 
 fn drain_rx(gem: &mut Rp1Gem, clock: &TimerClock, duration_us: u64) {
