@@ -24,12 +24,6 @@ const RP1_ETHERNET_DTB_PATHS: &[&str] = &[
 ];
 
 #[cfg(feature = "rp1-linux-scmi-uart-clock")]
-const RP1_CLOCK_NODE_PATHS: &[&str] = &[
-    "/axi/pcie@1000120000/rp1/clocks@18000",
-    "/axi/pcie@120000/rp1/clocks@18000",
-    "/soc/rp1/clocks@18000",
-];
-#[cfg(feature = "rp1-linux-scmi-uart-clock")]
 const RP1_MBOX_NODE_PATHS: &[&str] = &[
     "/axi/pcie@1000120000/rp1/mailbox@8000",
     "/axi/pcie@120000/rp1/mailbox@8000",
@@ -48,9 +42,9 @@ const RP1_GPIO_NODE_PATHS: &[&str] = &[
     "/soc/rp1/gpio@d0000",
 ];
 #[cfg(feature = "rp1-linux-scmi-uart-clock")]
-const RP1_PLL_SYS_PRI_PH: u32 = 6;
-#[cfg(feature = "rp1-linux-scmi-uart-clock")]
 const SCMI_CLOCK_UART: u32 = 0;
+#[cfg(feature = "rp1-linux-scmi-uart-clock")]
+const SCMI_CLOCK_UART_APB: u32 = 1;
 #[cfg(feature = "rp1-linux-scmi-uart-clock")]
 const SCMI_PROTOCOL_CLOCK: u32 = 0x14;
 #[cfg(feature = "rp1-linux-scmi-uart-clock")]
@@ -269,10 +263,6 @@ fn apply_scmi_uart_clock_coexistence(
         return Err(BootError::Rp1DtbPolicyInvalid);
     }
 
-    let clock_node_id =
-        find_existing_node(tree, RP1_CLOCK_NODE_PATHS).ok_or(BootError::Rp1DtbNodeNotFound)?;
-    let clock_phandle = node_phandle_or_allocate(tree, clock_node_id)?;
-
     let mbox_node_id =
         find_existing_node(tree, RP1_MBOX_NODE_PATHS).ok_or(BootError::Rp1DtbNodeNotFound)?;
     let mbox_phandle = node_phandle_or_allocate(tree, mbox_node_id)?;
@@ -356,7 +346,7 @@ fn apply_scmi_uart_clock_coexistence(
         .find(|spec| spec.bit == DEV_UART1)
         .and_then(|spec| find_existing_node(tree, spec.fallback_paths))
         .ok_or(BootError::Rp1DtbNodeNotFound)?;
-    rewrite_uart1_functional_clock(tree, uart1, scmi_clock_phandle, clock_phandle)?;
+    rewrite_uart1_clocks(tree, uart1, scmi_clock_phandle)?;
 
     if let Some(rp1_firmware) = tree.find_node_by_path("/rp1_firmware") {
         set_node_status(tree, rp1_firmware, "disabled")?;
@@ -373,11 +363,10 @@ fn apply_scmi_uart_clock_coexistence(
 }
 
 #[cfg(feature = "rp1-linux-scmi-uart-clock")]
-fn rewrite_uart1_functional_clock(
+fn rewrite_uart1_clocks(
     tree: &mut DeviceTreeOwned<'_>,
     uart_node_id: usize,
     scmi_clock_phandle: u32,
-    clock_phandle: u32,
 ) -> Result<(), BootError> {
     let node = tree.node_mut(uart_node_id).ok_or(BootError::DtbPatch)?;
     node.set_property(
@@ -385,8 +374,8 @@ fn rewrite_uart1_functional_clock(
         ValueRef::Owned(be32_cells(&[
             scmi_clock_phandle,
             SCMI_CLOCK_UART,
-            clock_phandle,
-            RP1_PLL_SYS_PRI_PH,
+            scmi_clock_phandle,
+            SCMI_CLOCK_UART_APB,
         ])),
     );
     node.set_property(
