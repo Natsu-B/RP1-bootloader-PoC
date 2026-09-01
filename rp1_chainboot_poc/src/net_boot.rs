@@ -151,6 +151,13 @@ fn boot_from_tftp_no_gem_handoff(dtb: &dtb::DtbParser) -> Result<(), BootError> 
             rp1_image.stack
         );
 
+        drain_rx(&mut *gem, &clock, 200_000);
+        crate::logln!("[TFTP] reinitializing GEM before kernel download");
+        // SAFETY: ownership of the unique reference stays in this scope;
+        // the released reference is replaced before any further GEM access.
+        unsafe { gem.release_after_quiesce() };
+        gem = init_tftp_gem_with_label(dtb, "before-kernel")?;
+
         let (kernel_base, image) =
             download_kernel_image_from_tftp(&mut *gem, &clock, &lease, &mut ports)?;
         #[cfg(feature = "tftp-initramfs-split")]
