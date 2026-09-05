@@ -3,9 +3,13 @@ use rp1_abi::owner::{
     DEV_UART1, bit,
 };
 
+#[derive(Clone, Copy)]
 pub struct Rp1Config {
     pub force_boot: bool,
     pub linux_pio: bool,
+    pub rp1_start_contract_explicit: bool,
+    pub rp1_entry_override: Option<u32>,
+    pub rp1_stack_override: Option<u32>,
     pub owner_table_seen: bool,
     pub owner_rp1: u64,
     pub owner_linux: u64,
@@ -17,6 +21,9 @@ impl Rp1Config {
         Self {
             force_boot: false,
             linux_pio: false,
+            rp1_start_contract_explicit: false,
+            rp1_entry_override: None,
+            rp1_stack_override: None,
             owner_table_seen: false,
             owner_rp1: 0,
             owner_linux: 0,
@@ -57,6 +64,14 @@ pub fn parse_optional_config(bytes: Option<&[u8]>) -> Result<Rp1Config, ()> {
                 ("force_boot", "false") => config.force_boot = false,
                 ("linux_pio", "false") => config.linux_pio = false,
                 ("linux_pio", "true") => return Err(()),
+                ("rp1_start_contract", "explicit") => config.rp1_start_contract_explicit = true,
+                ("rp1_start_contract", "default") => config.rp1_start_contract_explicit = false,
+                ("rp1_entry_override", value) => {
+                    config.rp1_entry_override = Some(parse_u32(value)?)
+                }
+                ("rp1_stack_override", value) => {
+                    config.rp1_stack_override = Some(parse_u32(value)?)
+                }
                 _ => return Err(()),
             },
             Section::Owner => {
@@ -67,6 +82,17 @@ pub fn parse_optional_config(bytes: Option<&[u8]>) -> Result<Rp1Config, ()> {
     }
 
     Ok(config)
+}
+
+fn parse_u32(value: &str) -> Result<u32, ()> {
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u32::from_str_radix(hex, 16).map_err(|_| ())
+    } else {
+        value.parse::<u32>().map_err(|_| ())
+    }
 }
 
 #[derive(Clone, Copy)]

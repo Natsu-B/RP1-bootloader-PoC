@@ -13,6 +13,20 @@ continue-on-rp1-bootstrap-failure = []
 tftp-boot = []
 tftp-initramfs = ["tftp-boot"]
 rp1-gdb-debug-stub = ["log-uart"]
+rp1-clock-independence-proof = ["rp1-gdb-debug-stub"]
+rp1-inbound-monitor-block-proof = ["rp1-gdb-debug-stub"]
+rp1-axishim-focused-sampling-proof = ["rp1-inbound-monitor-block-proof"]
+rp1-bar1-4k-protection-proof = ["rp1-inbound-monitor-block-proof"]
+rp1-bar1-64k-hole-proof = ["rp1-bar1-4k-protection-proof"]
+rp1-iatu-second-spare-programming-proof = ["rp1-inbound-monitor-block-proof"]
+rp1-iatu-64k-address-mask-characterization = ["rp1-iatu-second-spare-programming-proof"]
+rp1-bar1-interior-64k-hole-proof = ["rp1-bar1-4k-protection-proof"]
+rp1-bar1-hole-write-effect-proof = ["rp1-bar1-interior-64k-hole-proof"]
+rp1-bar1-second-interior-64k-page-proof = ["rp1-bar1-interior-64k-hole-proof"]
+rp1-boot-rom-dump = ["rp1-gdb-debug-stub"]
+rp1-linux-observe-failure = ["rp1-gdb-debug-stub"]
+rp1-gpio22-start-proof = []
+rp1-allow-local-dsram-vector-stack = []
 log-uart = []
 log-semihosting = []
 
@@ -33,4 +47,5 @@ embedded-hal = { version = "1", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"] }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 crc32fast = { version = "1", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 rp1-abi = { git = "https://github.com/Natsu-B/RP1-hal.git", branch = "codex/feat-rp1-debug-stub", package = "rp1-abi" }

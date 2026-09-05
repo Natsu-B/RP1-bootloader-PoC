@@ -21,15 +21,22 @@ mod boot_files;
 mod dhcp_boot;
 mod dtb_patch;
 mod gzip;
+mod hash;
 mod linux;
 mod net_boot;
 mod panic;
 mod placement;
 mod rp1_bootstrap;
+#[cfg(feature = "rp1-clock-independence-proof")]
+mod rp1_clock_independence;
 mod rp1_config;
 mod rp1_dtb_policy;
 mod rp1_image;
+#[cfg(feature = "rp1-inbound-monitor-block-proof")]
+mod rp1_inbound_monitor;
 mod rp1_note;
+
+const RP1_ELF_PATHS: &[&str] = &["/RP1.elf", "/rp1/RP1.elf", "/rp1/rp1.elf", "/RP1/RP1.ELF"];
 
 mod trace {
     use core::cell::UnsafeCell;
@@ -92,6 +99,17 @@ mod trace {
 
 #[cfg(all(feature = "log-uart", feature = "log-semihosting"))]
 compile_error!("features `log-uart` and `log-semihosting` are mutually exclusive");
+
+#[cfg(all(
+    feature = "rp1-clock-independence-proof",
+    feature = "rp1-inbound-monitor-block-proof"
+))]
+compile_error!(
+    "features `rp1-clock-independence-proof` and `rp1-inbound-monitor-block-proof` are mutually exclusive"
+);
+
+#[cfg(all(feature = "rp1-gpio22-start-proof", feature = "rp1-gdb-debug-stub"))]
+compile_error!("rp1-gpio22-start-proof must halt before host-side RP1 PCIe reinitialization");
 
 #[cfg(not(any(feature = "log-uart", feature = "log-semihosting")))]
 compile_error!("select exactly one log backend feature: `log-uart` or `log-semihosting`");
@@ -271,10 +289,7 @@ fn main_flow() -> Result<(), BootError> {
             logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
             None
         } else {
-            rp1_elf_file = read_first_optional_file(
-                sdhc,
-                &["/RP1.elf", "/rp1/RP1.elf", "/rp1/rp1.elf", "/RP1/RP1.ELF"],
-            )?;
+            rp1_elf_file = read_first_optional_file_with_path(sdhc, RP1_ELF_PATHS)?;
             if rp1_elf_file.is_some() {
                 logln!("[SD] /RP1.elf found");
             } else {
@@ -291,7 +306,8 @@ fn main_flow() -> Result<(), BootError> {
             }
 
             let fw_scratch = placement::rp1_scratch_slice();
-            if let Some(ref elf_bytes) = rp1_elf_file {
+            if let Some((elf_path, ref elf_bytes)) = rp1_elf_file {
+                log_rp1_elf_file_selection(elf_path, elf_bytes)?;
                 rp1_policy = Some(enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?);
                 let image = rp1_image::build_from_rp1_elf(
                     elf_bytes,
@@ -305,6 +321,7 @@ fn main_flow() -> Result<(), BootError> {
                     image.entry,
                     image.stack
                 );
+                log_rp1_elf_materialized(&image);
                 Some(image)
             } else if let Some(ref image_bytes) = rp1_img_file {
                 let image = rp1_image::parse_rp1_img(image_bytes)?;
@@ -579,10 +596,7 @@ pub(crate) fn boot_rp1_from_sd(
         return Ok(());
     }
 
-    let rp1_elf_file = read_first_optional_file(
-        sdhc,
-        &["/RP1.elf", "/rp1/RP1.elf", "/rp1/rp1.elf", "/RP1/RP1.ELF"],
-    )?;
+    let rp1_elf_file = read_first_optional_file_with_path(sdhc, RP1_ELF_PATHS)?;
     if rp1_elf_file.is_some() {
         logln!("[SD] /RP1.elf found");
     }
@@ -591,7 +605,8 @@ pub(crate) fn boot_rp1_from_sd(
         &["/RP1.img", "/rp1/RP1.img", "/rp1/rp1.img", "/RP1/RP1.IMG"],
     )?;
     let scratch = placement::rp1_scratch_slice();
-    let image = if let Some(ref elf_bytes) = rp1_elf_file {
+    let image = if let Some((elf_path, ref elf_bytes)) = rp1_elf_file {
+        log_rp1_elf_file_selection(elf_path, elf_bytes)?;
         let _policy = enforce_rp1_elf_note_policy_from_sd(sdhc, elf_bytes)?;
         let image =
             rp1_image::build_from_rp1_elf(elf_bytes, scratch, rp1_image::RP1_FALLBACK_STACK)?;
@@ -602,6 +617,7 @@ pub(crate) fn boot_rp1_from_sd(
             image.entry,
             image.stack
         );
+        log_rp1_elf_materialized(&image);
         Some(image)
     } else if let Some(ref image_bytes) = rp1_img_file {
         Some(rp1_image::parse_rp1_img(image_bytes)?)
@@ -644,6 +660,14 @@ pub(crate) fn start_rp1_image(
     dtb: &DtbParser,
     image: &rp1_image::Rp1Image<'_>,
 ) -> Result<(), BootError> {
+    start_rp1_image_with_debug_sram(dtb, image, None)
+}
+
+pub(crate) fn start_rp1_image_with_debug_sram(
+    dtb: &DtbParser,
+    image: &rp1_image::Rp1Image<'_>,
+    debug_sram: Option<(usize, usize)>,
+) -> Result<(), BootError> {
     let source = match image.source {
         rp1_image::Rp1ImageSource::Rp1Elf => "RP1.elf",
         rp1_image::Rp1ImageSource::Rp1Img => "RP1.img",
@@ -653,6 +677,8 @@ pub(crate) fn start_rp1_image(
     let i2c = bcm2712_i2c::Bcm2712I2c::from_dtb_or_fallback(dtb);
     let run = bcm2712_aon::Rp1RunPin::from_dtb_or_fallback(dtb);
     let mut bootstrap = rp1_bootstrap::Rp1Bootstrap::new(i2c, run);
+    #[cfg(feature = "rp1-gdb-debug-stub")]
+    log_rp1_pcie_audit(dtb, "pre-rp1-reload");
     match bootstrap.reset_into_bootrom() {
         Ok(Some(chip_id)) => logln!("[RP1BOOT] chip id = 0x{:08x}", chip_id),
         Ok(None) => {
@@ -660,10 +686,750 @@ pub(crate) fn start_rp1_image(
         }
         Err(err) => return handle_rp1_bootstrap_failure(err),
     }
-    if let Err(err) = bootstrap.load_and_start(image) {
-        handle_rp1_bootstrap_failure(err)?;
+    #[cfg(feature = "rp1-gdb-debug-stub")]
+    {
+        log_rp1_pcie_audit(dtb, "after-rp1-reset");
+        log_rp1_pcie_audit(dtb, "after-rp1-bootrom-probe");
     }
+    #[cfg(feature = "rp1-gdb-debug-stub")]
+    {
+        if let Err(err) = bootstrap.load_image(image) {
+            handle_rp1_bootstrap_failure(err)?;
+        }
+        logln!("[RP1BOOT] image loaded");
+        log_rp1_pcie_audit(dtb, "after-rp1-image-load");
+        if let Err(err) = bootstrap.program_scratch(image.entry, image.stack) {
+            handle_rp1_bootstrap_failure(err)?;
+        }
+        logln!("[RP1BOOT] scratch programmed");
+        if let Err(err) = bootstrap.start() {
+            handle_rp1_bootstrap_failure(err)?;
+        }
+        logln!("[RP1BOOT] proc0 started");
+    }
+    #[cfg(not(feature = "rp1-gdb-debug-stub"))]
+    {
+        if let Err(err) = bootstrap.load_and_start(image) {
+            handle_rp1_bootstrap_failure(err)?;
+        }
+        #[cfg(feature = "rp1-gpio22-start-proof")]
+        {
+            logln!("[RP1STARTPROOF] proc0 started; host halted before PCIe initialization");
+            halt();
+        }
+    }
+    #[cfg(feature = "rp1-gdb-debug-stub")]
+    {
+        let mut debug_sram = debug_sram;
+        if let Some((sram_base, sram_size)) = debug_sram {
+            let mut transport =
+                rp1_bootstrap::rp1_debug_stub::Rp1PcieTransport::new(sram_base, sram_size);
+            transport.log_probe("after-rp1-proc0-start");
+            transport.log_phase_readback("after-rp1-proc0-start");
+        }
+        for (attempt, delay_ms) in [10u64, 100, 500, 1_000].into_iter().enumerate() {
+            crate::timer::delay_millis(delay_ms);
+            let phase = match delay_ms {
+                10 => "after-rp1-proc0-start+10ms",
+                100 => "after-rp1-proc0-start+100ms",
+                500 => "after-rp1-proc0-start+500ms",
+                _ => "after-rp1-proc0-start+1000ms",
+            };
+            log_rp1_pcie_audit(dtb, phase);
+            if let Some((sram_base, sram_size)) = debug_sram {
+                let mut transport =
+                    rp1_bootstrap::rp1_debug_stub::Rp1PcieTransport::new(sram_base, sram_size);
+                transport.log_probe(phase);
+                transport.log_phase_readback(phase);
+            }
+            match arch_hal::soc::bcm2712::init_rp1_with_options(
+                dtb,
+                arch_hal::soc::bcm2712::Rp1InitOptions {
+                    mode: arch_hal::soc::bcm2712::Rp1InitMode::Auto,
+                    strict: false,
+                },
+            ) {
+                Ok(rp1) => {
+                    logln!(
+                        "[RP1PCIE:post-rp1-reload-reinit] attempt={} result=success",
+                        attempt
+                    );
+                    log_rp1_pcie_raw_diag("post-rp1-reload-reinit");
+                    log_rp1_pcie_config_dump(&rp1, "post-rp1-reload-reinit");
+                    if let Some((base, size)) = rp1.shared_sram_addr {
+                        match (usize::try_from(base), usize::try_from(size)) {
+                            (Ok(base), Ok(size)) => {
+                                logln!(
+                                    "[RP1GDB] post-start shared SRAM BAR cpu=0x{:x} size=0x{:x} attempt={}",
+                                    base,
+                                    size,
+                                    attempt
+                                );
+                                logln!(
+                                    "[RP1PCIE:post-rp1-reload-reinit] bar2_cpu=0x{:x} size=0x{:x}",
+                                    base,
+                                    size
+                                );
+                                debug_sram = Some((base, size));
+                                let mut transport =
+                                    rp1_bootstrap::rp1_debug_stub::Rp1PcieTransport::new(
+                                        base, size,
+                                    );
+                                transport.log_probe("post-rp1-reload-reinit");
+                                transport.log_phase_readback("post-rp1-reload-reinit");
+                                log_rp1_clock_host_alias_snapshot(&rp1, "post-rp1-reload-reinit");
+                                log_rp1_reset_host_alias_snapshot(&rp1, "post-rp1-reload-reinit");
+                                crate::timer::delay_millis(500);
+                                transport.log_probe("post-rp1-reload-reinit+500ms");
+                                transport.log_phase_readback("post-rp1-reload-reinit+500ms");
+                                transport.log_pll_core_lock_result("post-rp1-reload-reinit+500ms");
+                                #[cfg(feature = "rp1-boot-rom-dump")]
+                                transport.log_boot_rom_dump("post-rp1-reload-reinit+500ms");
+                                log_rp1_clock_host_alias_snapshot(
+                                    &rp1,
+                                    "post-rp1-reload-reinit+500ms",
+                                );
+                                log_rp1_reset_host_alias_snapshot(
+                                    &rp1,
+                                    "post-rp1-reload-reinit+500ms",
+                                );
+                                log_rp1_uart0_host_alias_snapshot(
+                                    &rp1,
+                                    "post-rp1-reload-reinit+500ms",
+                                );
+                                log_rp1_i2c1_host_alias_snapshot(
+                                    &rp1,
+                                    "post-rp1-reload-reinit+500ms",
+                                );
+                                log_rp1_spi0_host_alias_snapshot(
+                                    &rp1,
+                                    "post-rp1-reload-reinit+500ms",
+                                );
+                                #[cfg(feature = "rp1-clock-independence-proof")]
+                                {
+                                    rp1_clock_independence::run_after_full_init(&rp1);
+                                    halt();
+                                }
+                                #[cfg(all(
+                                    not(feature = "rp1-clock-independence-proof"),
+                                    feature = "rp1-inbound-monitor-block-proof"
+                                ))]
+                                {
+                                    rp1_inbound_monitor::run_after_full_init(&rp1);
+                                    halt();
+                                }
+                                #[cfg(not(any(
+                                    feature = "rp1-clock-independence-proof",
+                                    feature = "rp1-inbound-monitor-block-proof"
+                                )))]
+                                break;
+                            }
+                            _ => logln!("[RP1GDB] post-start shared SRAM BAR conversion failed"),
+                        }
+                    } else {
+                        logln!("[RP1GDB] post-start shared SRAM BAR missing");
+                    }
+                }
+                Err(err) => {
+                    logln!(
+                        "[RP1GDB] post-start RP1 PCIe init retry {} failed: {:?}",
+                        attempt,
+                        err
+                    );
+                    logln!(
+                        "[RP1PCIE:post-rp1-reload-reinit] attempt={} result={:?}",
+                        attempt,
+                        err
+                    );
+                }
+            }
+        }
+        let Some((sram_base, sram_size)) = debug_sram else {
+            logln!("[RP1GDB] shared SRAM BAR unavailable");
+            if cfg!(feature = "rp1-linux-observe-failure") {
+                logln!(
+                    "[RP1LINUXOBS] continuing to Linux handoff after RP1 post-reload PCIe failure"
+                );
+                return Ok(());
+            }
+            return Err(BootError::Rp1Pcie);
+        };
+        logln!(
+            "[RP1GDB] transport=pcie-sram sram_base=0x{:x} size=0x{:x}",
+            sram_base,
+            sram_size
+        );
+        if cfg!(feature = "rp1-linux-observe-failure") {
+            logln!("[RP1LINUXOBS] RP1 PCIe recovered; continuing to Linux handoff");
+            return Ok(());
+        }
+        let mut transport =
+            rp1_bootstrap::rp1_debug_stub::Rp1PcieTransport::new(sram_base, sram_size);
+        rp1_bootstrap::rp1_debug_stub::serve_with_transport(&mut transport);
+    }
+    #[cfg(not(feature = "rp1-gdb-debug-stub"))]
     Ok(())
+}
+
+#[cfg(feature = "rp1-gdb-debug-stub")]
+fn log_rp1_pcie_audit(dtb: &DtbParser, label: &'static str) {
+    logln!("[RP1PCIE:{}] audit begin", label);
+    log_rp1_pcie_raw_diag(label);
+    match arch_hal::soc::bcm2712::init_rp1_with_options(
+        dtb,
+        arch_hal::soc::bcm2712::Rp1InitOptions {
+            mode: arch_hal::soc::bcm2712::Rp1InitMode::AuditOnly,
+            strict: false,
+        },
+    ) {
+        Ok(rp1) => {
+            logln!("[RP1PCIE:{}] audit result=success", label);
+            arch_hal::soc::bcm2712::dump_rp1_pcie_diagnostics(&rp1);
+        }
+        Err(err) => logln!("[RP1PCIE:{}] audit result={:?}", label, err),
+    }
+}
+
+#[cfg(feature = "rp1-gdb-debug-stub")]
+fn log_rp1_pcie_config_dump(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'static str) {
+    const RP1_PERIPHERAL_BASE: u64 = 0x4000_0000;
+    const RP1_PCIE_CFG_BASE: u64 = 0x4010_8000;
+    let Some((peripheral_base, peripheral_size)) = rp1.peripheral_addr else {
+        logln!("[RP1PCIECFG] {} peripheral BAR missing", label);
+        return;
+    };
+    let Some(offset) = RP1_PCIE_CFG_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
+        logln!("[RP1PCIECFG] {} invalid cfg offset", label);
+        return;
+    };
+    let Some(end) = offset.checked_add(0x80) else {
+        logln!("[RP1PCIECFG] {} cfg offset overflow", label);
+        return;
+    };
+    if end > peripheral_size {
+        logln!(
+            "[RP1PCIECFG] {} cfg outside BAR peripheral=0x{:x} size=0x{:x} offset=0x{:x}",
+            label,
+            peripheral_base,
+            peripheral_size,
+            offset
+        );
+        return;
+    }
+    let Some(cpu_base) = peripheral_base.checked_add(offset) else {
+        logln!("[RP1PCIECFG] {} cfg cpu alias overflow", label);
+        return;
+    };
+    logln!(
+        "[RP1PCIECFG] {} peripheral_base=0x{:x} size=0x{:x} cfg_cpu=0x{:x}",
+        label,
+        peripheral_base,
+        peripheral_size,
+        cpu_base
+    );
+    for row in (0..0x80usize).step_by(16) {
+        unsafe {
+            let a = core::ptr::read_volatile((cpu_base as usize + row) as *const u32);
+            let b = core::ptr::read_volatile((cpu_base as usize + row + 4) as *const u32);
+            let c = core::ptr::read_volatile((cpu_base as usize + row + 8) as *const u32);
+            let d = core::ptr::read_volatile((cpu_base as usize + row + 12) as *const u32);
+            logln!(
+                "[RP1PCIECFG] {} +0x{:03x}: {:08x} {:08x} {:08x} {:08x}",
+                label,
+                row,
+                a,
+                b,
+                c,
+                d
+            );
+        }
+    }
+}
+
+#[cfg(feature = "rp1-gdb-debug-stub")]
+fn log_rp1_clock_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'static str) {
+    const RP1_PERIPHERAL_BASE: u64 = 0x4000_0000;
+    const PLL_SYS_BASE: u64 = 0x4002_0000;
+    const CLK_UART_BASE: u64 = 0x4001_8054;
+    const PLL_SYS_WINDOW_SIZE: u64 = 0x18;
+    const CLK_UART_WINDOW_SIZE: u64 = 0x08;
+
+    let Some((peripheral_base, peripheral_size)) = rp1.peripheral_addr else {
+        logln!("[RP1CLKHOST] {} peripheral BAR missing", label);
+        return;
+    };
+    let Some(pll_offset) = PLL_SYS_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
+        logln!("[RP1CLKHOST] {} invalid PLL_SYS offset", label);
+        return;
+    };
+    let Some(clk_uart_offset) = CLK_UART_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
+        logln!("[RP1CLKHOST] {} invalid CLK_UART offset", label);
+        return;
+    };
+    let Some(pll_end) = pll_offset.checked_add(PLL_SYS_WINDOW_SIZE) else {
+        logln!("[RP1CLKHOST] {} PLL_SYS offset overflow", label);
+        return;
+    };
+    let Some(clk_uart_end) = clk_uart_offset.checked_add(CLK_UART_WINDOW_SIZE) else {
+        logln!("[RP1CLKHOST] {} CLK_UART offset overflow", label);
+        return;
+    };
+    if pll_end > peripheral_size || clk_uart_end > peripheral_size {
+        logln!(
+            "[RP1CLKHOST] {} clock block outside BAR peripheral=0x{:x} size=0x{:x}",
+            label,
+            peripheral_base,
+            peripheral_size
+        );
+        return;
+    }
+    let Some(pll_cpu) = peripheral_base.checked_add(pll_offset) else {
+        logln!("[RP1CLKHOST] {} PLL_SYS CPU alias overflow", label);
+        return;
+    };
+    let Some(clk_uart_cpu) = peripheral_base.checked_add(clk_uart_offset) else {
+        logln!("[RP1CLKHOST] {} CLK_UART CPU alias overflow", label);
+        return;
+    };
+    let (Ok(pll_cpu), Ok(clk_uart_cpu)) = (usize::try_from(pll_cpu), usize::try_from(clk_uart_cpu))
+    else {
+        logln!("[RP1CLKHOST] {} clock CPU alias conversion failed", label);
+        return;
+    };
+
+    unsafe {
+        let pll_sys_cs = core::ptr::read_volatile(pll_cpu as *const u32);
+        let pll_sys_pwr = core::ptr::read_volatile((pll_cpu + 0x04) as *const u32);
+        let pll_sys_fbdiv_int = core::ptr::read_volatile((pll_cpu + 0x08) as *const u32);
+        let pll_sys_fbdiv_frac = core::ptr::read_volatile((pll_cpu + 0x0c) as *const u32);
+        let pll_sys_prim = core::ptr::read_volatile((pll_cpu + 0x10) as *const u32);
+        let pll_sys_sec = core::ptr::read_volatile((pll_cpu + 0x14) as *const u32);
+        let clk_uart_ctrl = core::ptr::read_volatile(clk_uart_cpu as *const u32);
+        let clk_uart_div_int = core::ptr::read_volatile((clk_uart_cpu + 0x04) as *const u32);
+        logln!(
+            "[RP1CLKHOST] {} pll_cpu=0x{:x} PLL_SYS_CS={:08x} PLL_SYS_PWR={:08x} PLL_SYS_PRIM={:08x} bit4={}",
+            label,
+            pll_cpu,
+            pll_sys_cs,
+            pll_sys_pwr,
+            pll_sys_prim,
+            (pll_sys_prim >> 4) & 1
+        );
+        logln!(
+            "[RP1CLKHOST] {} clk_uart_cpu=0x{:x} CLK_UART_CTRL={:08x} CLK_UART_DIV_INT={:08x}",
+            label,
+            clk_uart_cpu,
+            clk_uart_ctrl,
+            clk_uart_div_int
+        );
+        logln!(
+            "[RP1CLKHOST] {} PLL_SYS_FBDIV_INT={:08x} PLL_SYS_FBDIV_FRAC={:08x} PLL_SYS_SEC={:08x}",
+            label,
+            pll_sys_fbdiv_int,
+            pll_sys_fbdiv_frac,
+            pll_sys_sec
+        );
+    }
+}
+
+#[cfg(feature = "rp1-gdb-debug-stub")]
+fn log_rp1_reset_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'static str) {
+    const RP1_PERIPHERAL_BASE: u64 = 0x4000_0000;
+    const RESETS_BASE: u64 = 0x4001_4000;
+    const RESETS_WINDOW_SIZE: u64 = 0x24;
+
+    let Some((peripheral_base, peripheral_size)) = rp1.peripheral_addr else {
+        logln!("[RP1RESETHOST] {} peripheral BAR missing", label);
+        return;
+    };
+    let Some(reset_offset) = RESETS_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
+        logln!("[RP1RESETHOST] {} invalid reset offset", label);
+        return;
+    };
+    let Some(reset_end) = reset_offset.checked_add(RESETS_WINDOW_SIZE) else {
+        logln!("[RP1RESETHOST] {} reset offset overflow", label);
+        return;
+    };
+    if reset_end > peripheral_size {
+        logln!(
+            "[RP1RESETHOST] {} reset block outside BAR peripheral=0x{:x} size=0x{:x}",
+            label,
+            peripheral_base,
+            peripheral_size
+        );
+        return;
+    }
+    let Some(reset_cpu) = peripheral_base.checked_add(reset_offset) else {
+        logln!("[RP1RESETHOST] {} reset CPU alias overflow", label);
+        return;
+    };
+    let Ok(reset_cpu) = usize::try_from(reset_cpu) else {
+        logln!("[RP1RESETHOST] {} reset CPU alias conversion failed", label);
+        return;
+    };
+
+    unsafe {
+        let ctrl = core::ptr::read_volatile(reset_cpu as *const u32);
+        let ctrl1 = core::ptr::read_volatile((reset_cpu + 0x04) as *const u32);
+        let ctrl2 = core::ptr::read_volatile((reset_cpu + 0x08) as *const u32);
+        let done = core::ptr::read_volatile((reset_cpu + 0x18) as *const u32);
+        let done1 = core::ptr::read_volatile((reset_cpu + 0x1c) as *const u32);
+        let done2 = core::ptr::read_volatile((reset_cpu + 0x20) as *const u32);
+        logln!(
+            "[RP1RESETHOST] {} reset_cpu=0x{:x} CTRL={:08x} DONE={:08x} ctrl29={} done29={} ctrl26={} done26={}",
+            label,
+            reset_cpu,
+            ctrl,
+            done,
+            (ctrl >> 29) & 1,
+            (done >> 29) & 1,
+            (ctrl >> 26) & 1,
+            (done >> 26) & 1
+        );
+        logln!(
+            "[RP1RESETHOST] {} CTRL0={:08x} CTRL1={:08x} CTRL2={:08x} DONE0={:08x} DONE1={:08x} DONE2={:08x}",
+            label,
+            ctrl,
+            ctrl1,
+            ctrl2,
+            done,
+            done1,
+            done2
+        );
+        logln!(
+            "[RP1RESETHOST] {} UART0 bank=1 bit=26 ctrl={} done={}",
+            label,
+            (ctrl1 >> 26) & 1,
+            (done1 >> 26) & 1
+        );
+    }
+}
+
+#[cfg(feature = "rp1-gdb-debug-stub")]
+fn log_rp1_uart0_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'static str) {
+    const RP1_PERIPHERAL_BASE: u64 = 0x4000_0000;
+    const RP1_UART0_BASE: u64 = 0x4003_0000;
+    const UART0_WINDOW_SIZE: u64 = 0x1000;
+
+    let Some((peripheral_base, peripheral_size)) = rp1.peripheral_addr else {
+        logln!("[RP1UART0HOST] {} peripheral BAR missing", label);
+        return;
+    };
+    let Some(offset) = RP1_UART0_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
+        logln!("[RP1UART0HOST] {} invalid UART0 offset", label);
+        return;
+    };
+    let Some(end) = offset.checked_add(UART0_WINDOW_SIZE) else {
+        logln!("[RP1UART0HOST] {} UART0 offset overflow", label);
+        return;
+    };
+    if end > peripheral_size {
+        logln!(
+            "[RP1UART0HOST] {} UART0 outside BAR peripheral=0x{:x} size=0x{:x} offset=0x{:x}",
+            label,
+            peripheral_base,
+            peripheral_size,
+            offset
+        );
+        return;
+    }
+    let Some(cpu_base) = peripheral_base.checked_add(offset) else {
+        logln!("[RP1UART0HOST] {} UART0 CPU alias overflow", label);
+        return;
+    };
+    let Ok(cpu_base) = usize::try_from(cpu_base) else {
+        logln!("[RP1UART0HOST] {} UART0 CPU alias conversion failed", label);
+        return;
+    };
+
+    unsafe {
+        let rsr = core::ptr::read_volatile((cpu_base + 0x04) as *const u32);
+        let fr = core::ptr::read_volatile((cpu_base + 0x18) as *const u32);
+        let ibrd = core::ptr::read_volatile((cpu_base + 0x24) as *const u32);
+        let fbrd = core::ptr::read_volatile((cpu_base + 0x28) as *const u32);
+        let lcr_h = core::ptr::read_volatile((cpu_base + 0x2c) as *const u32);
+        let cr = core::ptr::read_volatile((cpu_base + 0x30) as *const u32);
+        let imsc = core::ptr::read_volatile((cpu_base + 0x38) as *const u32);
+        let ris = core::ptr::read_volatile((cpu_base + 0x3c) as *const u32);
+        let mis = core::ptr::read_volatile((cpu_base + 0x40) as *const u32);
+        let icr = core::ptr::read_volatile((cpu_base + 0x44) as *const u32);
+        let pid0 = core::ptr::read_volatile((cpu_base + 0xfe0) as *const u32);
+        let pid1 = core::ptr::read_volatile((cpu_base + 0xfe4) as *const u32);
+        let pid2 = core::ptr::read_volatile((cpu_base + 0xfe8) as *const u32);
+        let pid3 = core::ptr::read_volatile((cpu_base + 0xfec) as *const u32);
+        let cid0 = core::ptr::read_volatile((cpu_base + 0xff0) as *const u32);
+        let cid1 = core::ptr::read_volatile((cpu_base + 0xff4) as *const u32);
+        let cid2 = core::ptr::read_volatile((cpu_base + 0xff8) as *const u32);
+        let cid3 = core::ptr::read_volatile((cpu_base + 0xffc) as *const u32);
+        logln!(
+            "[RP1UART0HOST] {} cpu=0x{:x} RSR={:08x} FR={:08x} IBRD={:08x} FBRD={:08x}",
+            label,
+            cpu_base,
+            rsr,
+            fr,
+            ibrd,
+            fbrd
+        );
+        logln!(
+            "[RP1UART0HOST] {} LCR_H={:08x} CR={:08x} IMSC={:08x} RIS={:08x} MIS={:08x} ICR={:08x}",
+            label,
+            lcr_h,
+            cr,
+            imsc,
+            ris,
+            mis,
+            icr
+        );
+        logln!(
+            "[RP1UART0HOST] {} PID={:02x}:{:02x}:{:02x}:{:02x} CID={:02x}:{:02x}:{:02x}:{:02x}",
+            label,
+            pid3 & 0xff,
+            pid2 & 0xff,
+            pid1 & 0xff,
+            pid0 & 0xff,
+            cid3 & 0xff,
+            cid2 & 0xff,
+            cid1 & 0xff,
+            cid0 & 0xff
+        );
+    }
+}
+
+#[cfg(feature = "rp1-gdb-debug-stub")]
+fn log_rp1_i2c1_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'static str) {
+    const RP1_PERIPHERAL_BASE: u64 = 0x4000_0000;
+    const RP1_I2C1_BASE: u64 = 0x4007_4000;
+    const I2C1_WINDOW_SIZE: u64 = 0x1000;
+
+    let Some((peripheral_base, peripheral_size)) = rp1.peripheral_addr else {
+        logln!("[RP1I2C1HOST] {} peripheral BAR missing", label);
+        return;
+    };
+    let Some(offset) = RP1_I2C1_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
+        logln!("[RP1I2C1HOST] {} invalid I2C1 offset", label);
+        return;
+    };
+    let Some(end) = offset.checked_add(I2C1_WINDOW_SIZE) else {
+        logln!("[RP1I2C1HOST] {} I2C1 offset overflow", label);
+        return;
+    };
+    if end > peripheral_size {
+        logln!(
+            "[RP1I2C1HOST] {} I2C1 outside BAR peripheral=0x{:x} size=0x{:x} offset=0x{:x}",
+            label,
+            peripheral_base,
+            peripheral_size,
+            offset
+        );
+        return;
+    }
+    let Some(cpu_base) = peripheral_base.checked_add(offset) else {
+        logln!("[RP1I2C1HOST] {} I2C1 CPU alias overflow", label);
+        return;
+    };
+    let Ok(cpu_base) = usize::try_from(cpu_base) else {
+        logln!("[RP1I2C1HOST] {} I2C1 CPU alias conversion failed", label);
+        return;
+    };
+
+    unsafe {
+        let con = core::ptr::read_volatile(cpu_base as *const u32);
+        let tar = core::ptr::read_volatile((cpu_base + 0x04) as *const u32);
+        let ss_hcnt = core::ptr::read_volatile((cpu_base + 0x14) as *const u32);
+        let ss_lcnt = core::ptr::read_volatile((cpu_base + 0x18) as *const u32);
+        let intr_stat = core::ptr::read_volatile((cpu_base + 0x2c) as *const u32);
+        let intr_mask = core::ptr::read_volatile((cpu_base + 0x30) as *const u32);
+        let raw_intr = core::ptr::read_volatile((cpu_base + 0x34) as *const u32);
+        let rx_tl = core::ptr::read_volatile((cpu_base + 0x38) as *const u32);
+        let tx_tl = core::ptr::read_volatile((cpu_base + 0x3c) as *const u32);
+        let enable = core::ptr::read_volatile((cpu_base + 0x6c) as *const u32);
+        let status = core::ptr::read_volatile((cpu_base + 0x70) as *const u32);
+        let txflr = core::ptr::read_volatile((cpu_base + 0x74) as *const u32);
+        let rxflr = core::ptr::read_volatile((cpu_base + 0x78) as *const u32);
+        let sda_hold = core::ptr::read_volatile((cpu_base + 0x7c) as *const u32);
+        let tx_abrt_source = core::ptr::read_volatile((cpu_base + 0x80) as *const u32);
+        let enable_status = core::ptr::read_volatile((cpu_base + 0x9c) as *const u32);
+        let comp_param = core::ptr::read_volatile((cpu_base + 0xf4) as *const u32);
+        let comp_version = core::ptr::read_volatile((cpu_base + 0xf8) as *const u32);
+        let comp_type = core::ptr::read_volatile((cpu_base + 0xfc) as *const u32);
+        logln!(
+            "[RP1I2C1HOST] {} cpu=0x{:x} CON={:08x} TAR={:08x} SS_HCNT={:08x} SS_LCNT={:08x}",
+            label,
+            cpu_base,
+            con,
+            tar,
+            ss_hcnt,
+            ss_lcnt
+        );
+        logln!(
+            "[RP1I2C1HOST] {} INTR_STAT={:08x} INTR_MASK={:08x} RAW_INTR={:08x} RX_TL={:08x} TX_TL={:08x}",
+            label,
+            intr_stat,
+            intr_mask,
+            raw_intr,
+            rx_tl,
+            tx_tl
+        );
+        logln!(
+            "[RP1I2C1HOST] {} ENABLE={:08x} ENABLE_STATUS={:08x} STATUS={:08x} TXFLR={:08x} RXFLR={:08x}",
+            label,
+            enable,
+            enable_status,
+            status,
+            txflr,
+            rxflr
+        );
+        logln!(
+            "[RP1I2C1HOST] {} SDA_HOLD={:08x} TX_ABRT_SOURCE={:08x} COMP_PARAM={:08x} COMP_VERSION={:08x} COMP_TYPE={:08x}",
+            label,
+            sda_hold,
+            tx_abrt_source,
+            comp_param,
+            comp_version,
+            comp_type
+        );
+    }
+}
+
+#[cfg(feature = "rp1-gdb-debug-stub")]
+fn log_rp1_spi0_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'static str) {
+    const RP1_PERIPHERAL_BASE: u64 = 0x4000_0000;
+    const RP1_SPI0_BASE: u64 = 0x4005_0000;
+    const SPI0_WINDOW_SIZE: u64 = 0x130;
+
+    let Some((peripheral_base, peripheral_size)) = rp1.peripheral_addr else {
+        logln!("[RP1SPI0HOST] {} peripheral BAR missing", label);
+        return;
+    };
+    let Some(offset) = RP1_SPI0_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
+        logln!("[RP1SPI0HOST] {} invalid SPI0 offset", label);
+        return;
+    };
+    let Some(end) = offset.checked_add(SPI0_WINDOW_SIZE) else {
+        logln!("[RP1SPI0HOST] {} SPI0 offset overflow", label);
+        return;
+    };
+    if end > peripheral_size {
+        logln!(
+            "[RP1SPI0HOST] {} SPI0 block outside BAR peripheral=0x{:x} size=0x{:x} offset=0x{:x}",
+            label,
+            peripheral_base,
+            peripheral_size,
+            offset
+        );
+        return;
+    }
+    let Some(cpu_base) = peripheral_base.checked_add(offset) else {
+        logln!("[RP1SPI0HOST] {} SPI0 CPU alias overflow", label);
+        return;
+    };
+    let Ok(cpu_base) = usize::try_from(cpu_base) else {
+        logln!("[RP1SPI0HOST] {} SPI0 CPU alias conversion failed", label);
+        return;
+    };
+
+    unsafe {
+        let ctrlr0 = core::ptr::read_volatile(cpu_base as *const u32);
+        let ctrlr1 = core::ptr::read_volatile((cpu_base + 0x04) as *const u32);
+        let ssienr = core::ptr::read_volatile((cpu_base + 0x08) as *const u32);
+        let ser = core::ptr::read_volatile((cpu_base + 0x10) as *const u32);
+        let baudr = core::ptr::read_volatile((cpu_base + 0x14) as *const u32);
+        let txftlr = core::ptr::read_volatile((cpu_base + 0x18) as *const u32);
+        let rxftlr = core::ptr::read_volatile((cpu_base + 0x1c) as *const u32);
+        let txflr = core::ptr::read_volatile((cpu_base + 0x20) as *const u32);
+        let rxflr = core::ptr::read_volatile((cpu_base + 0x24) as *const u32);
+        let sr = core::ptr::read_volatile((cpu_base + 0x28) as *const u32);
+        let imr = core::ptr::read_volatile((cpu_base + 0x2c) as *const u32);
+        let isr = core::ptr::read_volatile((cpu_base + 0x30) as *const u32);
+        let risr = core::ptr::read_volatile((cpu_base + 0x34) as *const u32);
+        let dmacr = core::ptr::read_volatile((cpu_base + 0x4c) as *const u32);
+        let idr = core::ptr::read_volatile((cpu_base + 0x58) as *const u32);
+        let version = core::ptr::read_volatile((cpu_base + 0x5c) as *const u32);
+        let rx_sample_dly = core::ptr::read_volatile((cpu_base + 0xf0) as *const u32);
+        let cs_override = core::ptr::read_volatile((cpu_base + 0xf4) as *const u32);
+        logln!(
+            "[RP1SPI0HOST] {} cpu=0x{:x} CTRLR0={:08x} CTRLR1={:08x} SSIENR={:08x} SER={:08x} BAUDR={:08x}",
+            label,
+            cpu_base,
+            ctrlr0,
+            ctrlr1,
+            ssienr,
+            ser,
+            baudr
+        );
+        logln!(
+            "[RP1SPI0HOST] {} TXFTLR={:08x} RXFTLR={:08x} TXFLR={:08x} RXFLR={:08x} SR={:08x}",
+            label,
+            txftlr,
+            rxftlr,
+            txflr,
+            rxflr,
+            sr
+        );
+        logln!(
+            "[RP1SPI0HOST] {} IMR={:08x} ISR={:08x} RISR={:08x} DMACR={:08x}",
+            label,
+            imr,
+            isr,
+            risr,
+            dmacr
+        );
+        logln!(
+            "[RP1SPI0HOST] {} IDR={:08x} VERSION={:08x} RX_SAMPLE_DLY={:08x} CS_OVERRIDE={:08x}",
+            label,
+            idr,
+            version,
+            rx_sample_dly,
+            cs_override
+        );
+    }
+}
+
+#[cfg(feature = "rp1-gdb-debug-stub")]
+pub(crate) fn log_rp1_pcie_raw_diag(label: &'static str) {
+    const PCIE_BASE: usize = 0x10_0012_0000;
+    const REG_PCIE_CTRL: usize = 0x4064;
+    const REG_PCIE_STATUS: usize = 0x4068;
+    const REG_CONFIG_DATA: usize = 0x8000;
+    const REG_CONFIG_ADDRESS: usize = 0x9000;
+    const RP1_BDF: u32 = 0x0010_0000;
+
+    unsafe {
+        let ctrl = core::ptr::read_volatile((PCIE_BASE + REG_PCIE_CTRL) as *const u32);
+        let status = core::ptr::read_volatile((PCIE_BASE + REG_PCIE_STATUS) as *const u32);
+        logln!(
+            "[RP1PCIE:{}] root ctrl=0x{:08x} status=0x{:08x} link_up={}",
+            label,
+            ctrl,
+            status,
+            (status & 0x30) == 0x30
+        );
+        core::ptr::write_volatile((PCIE_BASE + REG_CONFIG_ADDRESS) as *mut u32, RP1_BDF);
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        let cfg = PCIE_BASE + REG_CONFIG_DATA;
+        let id = core::ptr::read_volatile((cfg + 0x00) as *const u32);
+        let cmd_status = core::ptr::read_volatile((cfg + 0x04) as *const u32);
+        let class_rev = core::ptr::read_volatile((cfg + 0x08) as *const u32);
+        let bhlc = core::ptr::read_volatile((cfg + 0x0c) as *const u32);
+        let bar0 = core::ptr::read_volatile((cfg + 0x10) as *const u32);
+        let bar1 = core::ptr::read_volatile((cfg + 0x14) as *const u32);
+        let bar2 = core::ptr::read_volatile((cfg + 0x18) as *const u32);
+        logln!(
+            "[RP1PCIE:{}] ep_id=0x{:08x} cmd_status=0x{:08x} class_rev=0x{:08x} bhlc=0x{:08x}",
+            label,
+            id,
+            cmd_status,
+            class_rev,
+            bhlc
+        );
+        logln!(
+            "[RP1PCIE:{}] bar0=0x{:08x} bar1=0x{:08x} bar2=0x{:08x}",
+            label,
+            bar0,
+            bar1,
+            bar2
+        );
+    }
 }
 
 fn enforce_rp1_elf_note_policy_from_sd(
@@ -758,6 +1524,142 @@ fn read_first_optional_file(
         }
     }
     Ok(None)
+}
+
+fn read_first_optional_file_with_path(
+    sdhc: &'static dyn BlockDevice,
+    paths: &'static [&'static str],
+) -> Result<Option<(&'static str, allocator::AlignedSliceBox<u8>)>, BootError> {
+    for path in paths {
+        match boot_files::read_optional_file(sdhc, path) {
+            Ok(Some(bytes)) => {
+                logln!("[SD] selected {}", path);
+                return Ok(Some((path, bytes)));
+            }
+            Ok(None) => {
+                logln!("[SD] {} not found", path);
+            }
+            Err(err) => {
+                logln!("[SD] {} error: {:?}", path, err);
+                return Err(err);
+            }
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn log_rp1_elf_file_selection(
+    path: &str,
+    elf_bytes: &[u8],
+) -> Result<rp1_image::Rp1ElfInfo, BootError> {
+    let file_digest = hash::sha256_bytes(elf_bytes);
+    logln!("[RP1SRC] selected=ELF path={}", path);
+    timer::delay_millis(2);
+    logln!("[RP1ELF] len=0x{:x}", elf_bytes.len());
+    timer::delay_millis(2);
+    hash::log_sha256_len("rp1.selected.file", &file_digest, elf_bytes.len());
+    hash::log_sha256_len("rp1.elf.full", &file_digest, elf_bytes.len());
+    logln!("[RP1ELF] file_sha256={}", hash::Sha256Hex(&file_digest));
+    timer::delay_millis(2);
+
+    let info = rp1_image::inspect_rp1_elf(elf_bytes)?;
+    logln!(
+        "[RP1ELF] entry=0x{:08x} sp=0x{:08x}",
+        info.entry,
+        info.vector0_sp
+    );
+    timer::delay_millis(2);
+    logln!("[RP1ELF] e_entry=0x{:08x}", info.entry);
+    timer::delay_millis(2);
+    logln!("[RP1ELF] vector0_sp=0x{:08x}", info.vector0_sp);
+    timer::delay_millis(2);
+    logln!("[RP1ELF] vector1_reset=0x{:08x}", info.vector1_reset);
+    timer::delay_millis(2);
+    logln!("[RP1ELF] phnum={}", info.phnum);
+    timer::delay_millis(2);
+    for (index, load) in info.loads().iter().enumerate() {
+        logln!(
+            "[RP1ELF] load[{}] off=0x{:x} vaddr=0x{:08x} paddr=0x{:08x} filesz=0x{:x} memsz=0x{:x} flags=0x{:x} align=0x{:x}",
+            index,
+            load.file_offset,
+            load.vaddr,
+            load.paddr,
+            load.filesz,
+            load.memsz,
+            load.flags,
+            load.align
+        );
+        timer::delay_millis(2);
+        if index == 0 {
+            logln!(
+                "[RP1ELF] load0 off=0x{:x} addr=0x{:08x} size=0x{:x}",
+                load.file_offset,
+                load.paddr,
+                load.filesz
+            );
+            timer::delay_millis(2);
+            let ptload = rp1_image::elf_load_file_bytes(elf_bytes, load)?;
+            let ptload_digest = hash::sha256_bytes(ptload);
+            hash::log_sha256_len("rp1.elf.ptload.0.file", &ptload_digest, ptload.len());
+        }
+    }
+    Ok(info)
+}
+
+pub(crate) fn log_rp1_elf_materialized(image: &rp1_image::Rp1Image<'_>) {
+    let materialized_digest = hash::sha256_bytes(image.payload);
+    hash::log_sha256_len(
+        "rp1.materialized",
+        &materialized_digest,
+        image.payload.len(),
+    );
+    logln!(
+        "[RP1ELF] start entry=0x{:08x} stack=0x{:08x} thumb={}",
+        image.entry,
+        image.stack,
+        image.entry & 1
+    );
+    timer::delay_millis(2);
+    logln!(
+        "[RP1ELF] start entry=0x{:08x} sp=0x{:08x}",
+        image.entry,
+        image.stack
+    );
+    timer::delay_millis(2);
+}
+
+pub(crate) fn apply_rp1_elf_start_contract(
+    image: &mut rp1_image::Rp1Image<'_>,
+    config: &rp1_config::Rp1Config,
+) -> Result<(), BootError> {
+    if config.rp1_start_contract_explicit {
+        let entry = config
+            .rp1_entry_override
+            .ok_or(BootError::Rp1ConfigInvalid)?
+            | 1;
+        let stack = config
+            .rp1_stack_override
+            .ok_or(BootError::Rp1ConfigInvalid)?;
+        if entry == 1 || stack == 0 || !rp1_image::is_valid_stack(stack) {
+            return Err(BootError::Rp1ConfigInvalid);
+        }
+        image.entry = entry;
+        image.stack = stack;
+        logln!("[RP1ELF] start_contract=explicit");
+        timer::delay_millis(2);
+        logln!("[RP1ELF] start_entry=0x{:08x} source=override", entry);
+        timer::delay_millis(2);
+        logln!("[RP1ELF] start_stack=0x{:08x} source=override", stack);
+        timer::delay_millis(2);
+    } else {
+        logln!("[RP1ELF] start_contract=default");
+        timer::delay_millis(2);
+        logln!("[RP1ELF] start_entry=0x{:08x} source=elf", image.entry);
+        timer::delay_millis(2);
+        logln!("[RP1ELF] start_stack=0x{:08x} source=elf", image.stack);
+        timer::delay_millis(2);
+    }
+    Ok(())
 }
 
 pub fn halt() -> ! {

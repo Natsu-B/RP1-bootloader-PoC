@@ -6,6 +6,10 @@ members = [
 ]
 default-members = ["xtask"]
 
+[patch."https://github.com/Natsu-B/aarch64_type1_hypervisor.git"]
+io-api = { path = "../aarch64_type1_hypervisor/io_api" }
+net = { path = "../aarch64_type1_hypervisor/net" }
+
 [profile.release]
 panic = "abort"
 debug = true
