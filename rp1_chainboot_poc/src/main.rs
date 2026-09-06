@@ -4,6 +4,18 @@
 
 extern crate alloc;
 
+#[cfg(all(
+    feature = "rp1-stock-spi0-wrapper-readonly",
+    any(
+        feature = "rp1-gdb-debug-stub",
+        feature = "skip-rp1-reload",
+        feature = "continue-on-rp1-bootstrap-failure",
+        feature = "rp1-gpio22-start-proof",
+        feature = "rp1-allow-local-dsram-vector-stack"
+    )
+))]
+compile_error!("stock SPI0 reader requires the isolated non-debug reload path");
+
 use alloc::alloc::Layout;
 use core::alloc::{GlobalAlloc, Layout as CoreLayout};
 use core::arch::global_asm;
@@ -712,6 +724,11 @@ pub(crate) fn start_rp1_image_with_debug_sram(
         if let Err(err) = bootstrap.load_and_start(image) {
             handle_rp1_bootstrap_failure(err)?;
         }
+        #[cfg(feature = "rp1-stock-spi0-wrapper-readonly")]
+        {
+            logln!("[RP1STOCKSPI] proc0 started");
+            stock_spi0_wrapper_readonly(dtb);
+        }
         #[cfg(feature = "rp1-gpio22-start-proof")]
         {
             logln!("[RP1STARTPROOF] proc0 started; host halted before PCIe initialization");
@@ -869,6 +886,75 @@ pub(crate) fn start_rp1_image_with_debug_sram(
     }
     #[cfg(not(feature = "rp1-gdb-debug-stub"))]
     Ok(())
+}
+
+#[cfg(feature = "rp1-stock-spi0-wrapper-readonly")]
+fn stock_read_address(bar: Option<(u64, u64)>, offset: u64, length: u64) -> Option<usize> {
+    let (base, size) = bar?;
+    if length == 0 || offset.checked_add(length)? > size {
+        return None;
+    }
+    let address = base.checked_add(offset)?;
+    usize::try_from(address.checked_add(length - 1)?).ok()?;
+    let address = usize::try_from(address).ok()?;
+    (address != 0 && address % 4 == 0).then_some(address)
+}
+
+#[cfg(feature = "rp1-stock-spi0-wrapper-readonly")]
+fn stock_spi0_wrapper_readonly(dtb: &DtbParser) -> ! {
+    // Same bounded Auto reinitialization as the existing post-reload path.
+    // No private mailbox reads, commands, broad peripheral dump or Linux handoff.
+    for (attempt, delay_ms) in [10u64, 100, 500, 1_000].into_iter().enumerate() {
+        crate::timer::delay_millis(delay_ms);
+        match arch_hal::soc::bcm2712::init_rp1_with_options(
+            dtb,
+            arch_hal::soc::bcm2712::Rp1InitOptions {
+                mode: arch_hal::soc::bcm2712::Rp1InitMode::Auto,
+                strict: false,
+            },
+        ) {
+            Ok(rp1) => {
+                let Some(sram) = stock_read_address(rp1.shared_sram_addr, 0, 8) else {
+                    logln!("[RP1STOCKSPI] fatal: invalid BAR2");
+                    halt();
+                };
+                let Some(spi) = stock_read_address(rp1.peripheral_addr, 0x50108, 4) else {
+                    logln!("[RP1STOCKSPI] fatal: invalid BAR1 SPI0 window");
+                    halt();
+                };
+                // Only the two stock vector words are read from BAR2.
+                let (sp, vector) = unsafe {
+                    (
+                        core::ptr::read_volatile(sram as *const u32),
+                        core::ptr::read_volatile((sram as *const u32).add(1)),
+                    )
+                };
+                logln!(
+                    "[RP1STOCKSPI] attempt={} bar2_cpu=0x{:x} vector={:08x},{:08x}",
+                    attempt,
+                    sram,
+                    sp,
+                    vector
+                );
+                if (sp, vector) != (0x100029e0, 0x20000215) {
+                    logln!("[RP1STOCKSPI] fatal: stock vector mismatch");
+                    halt();
+                }
+                // Primary firmware RMW target; observational read only, no gate claim.
+                let value = unsafe { core::ptr::read_volatile(spi as *const u32) };
+                logln!(
+                    "[RP1STOCKSPI] cpu=0x{:x} local=0x40050108 raw={:08x}",
+                    spi,
+                    value
+                );
+                logln!("[RP1STOCKSPI] done; halted before private ABI and Linux");
+                halt();
+            }
+            Err(err) => logln!("[RP1STOCKSPI] reinit attempt={} failed: {:?}", attempt, err),
+        }
+    }
+    logln!("[RP1STOCKSPI] fatal: bounded reinit exhausted");
+    halt();
 }
 
 #[cfg(feature = "rp1-gdb-debug-stub")]
