@@ -17,7 +17,7 @@ extern crate alloc;
 compile_error!("stock SPI0 reader requires the isolated non-debug reload path");
 
 #[cfg(all(
-    feature = "rp1-spi-peer-final-record",
+    any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record"),
     any(
         feature = "rp1-clock-independence-proof",
         feature = "rp1-inbound-monitor-block-proof",
@@ -28,6 +28,9 @@ compile_error!("stock SPI0 reader requires the isolated non-debug reload path");
     )
 ))]
 compile_error!("SPI peer final reader requires isolated replacement-firmware reload");
+
+#[cfg(all(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record"))]
+compile_error!("select exactly one SPI final record ABI");
 
 use alloc::alloc::Layout;
 use core::alloc::{GlobalAlloc, Layout as CoreLayout};
@@ -812,7 +815,7 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                                 crate::timer::delay_millis(500);
                                 transport.log_probe("post-rp1-reload-reinit+500ms");
                                 transport.log_phase_readback("post-rp1-reload-reinit+500ms");
-                                #[cfg(feature = "rp1-spi-peer-final-record")]
+                                #[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record"))]
                                 {
                                     transport.log_spi_peer_final_result();
                                     halt();
@@ -898,7 +901,7 @@ pub(crate) fn start_rp1_image_with_debug_sram(
             logln!("[RP1LINUXOBS] RP1 PCIe recovered; continuing to Linux handoff");
             return Ok(());
         }
-        #[cfg(feature = "rp1-spi-peer-final-record")]
+        #[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record"))]
         {
             logln!("[RP1PEERFINAL] failure=post-reload-reader-not-reached");
             halt();

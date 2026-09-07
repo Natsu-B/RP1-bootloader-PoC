@@ -75,17 +75,22 @@ pub trait Rp1MemoryTransport {
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), TransportError>;
 }
 
-#[cfg(feature = "rp1-spi-peer-final-record")]
+#[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record"))]
+const SPI_FINAL_BYTES: usize = if cfg!(feature = "rp1-spi-rearm-final-record") { 208 } else { 128 };
+#[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record"))]
+const SPI_FINAL_MAGIC: [u8; 4] = if cfg!(feature = "rp1-spi-rearm-final-record") { *b"S0R2" } else { *b"S0P1" };
+
+#[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record"))]
 fn wait_spi_peer_final<T: Rp1MemoryTransport>(
     transport: &mut T,
     mut delay: impl FnMut(),
-) -> Result<[u8; 128], &'static str> {
-    const _: () = assert!(128 <= COEXISTENCE_PRIVATE_SIZE);
+) -> Result<[u8; SPI_FINAL_BYTES], &'static str> {
+    const _: () = assert!(SPI_FINAL_BYTES <= COEXISTENCE_PRIVATE_SIZE);
     for _ in 0..2000 {
         let mut head = [0u8; 16];
         transport.read_mem(debug::MAILBOX_ADDR, &mut head).map_err(|_| "header-read")?;
-        if head[..4] == *b"S0P1" && head[4..8] == 1u32.to_le_bytes() {
-            let mut record = [0u8; 128];
+        if head[..4] == SPI_FINAL_MAGIC && head[4..8] == 1u32.to_le_bytes() {
+            let mut record = [0u8; SPI_FINAL_BYTES];
             transport.read_mem(debug::MAILBOX_ADDR, &mut record).map_err(|_| "record-read")?;
             let mut after = [0u8; 16];
             transport.read_mem(debug::MAILBOX_ADDR, &mut after).map_err(|_| "post-header-read")?;
@@ -206,9 +211,9 @@ impl Rp1PcieTransport {
         }
     }
 
-    #[cfg(feature = "rp1-spi-peer-final-record")]
+    #[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record"))]
     pub fn log_spi_peer_final_result(&mut self) {
-        crate::logln!("[RP1PEERFINAL] wait addr=0x2000fc00 bytes=128 polls=2000 interval_ms=20");
+        crate::logln!("[RP1PEERFINAL] wait addr=0x2000fc00 bytes={} polls=2000 interval_ms=20", SPI_FINAL_BYTES);
         match wait_spi_peer_final(self, || crate::timer::delay_millis(20)) {
             Ok(record) => {
                 for (chunk, data) in record.chunks_exact(16).enumerate() {
