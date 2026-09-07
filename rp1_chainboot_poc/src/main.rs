@@ -831,7 +831,7 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                                 crate::timer::delay_millis(500);
                                 transport.log_probe("post-rp1-reload-reinit+500ms");
                                 transport.log_phase_readback("post-rp1-reload-reinit+500ms");
-                                #[cfg(feature = "rp1-spi-overflow-final-record")] { transport.log_spi_overflow_final_result(); halt(); } #[cfg(feature = "rp1-spi-retained-final-record")]
+                                #[cfg(feature = "rp1-spi-deadline-final-record")] { transport.log_spi_deadline_final_result(); halt(); } #[cfg(feature = "rp1-spi-overflow-final-record")] { transport.log_spi_overflow_final_result(); halt(); } #[cfg(feature = "rp1-spi-retained-final-record")]
                                 {
                                     transport.log_spi_retained_final_result();
                                     halt();
@@ -922,7 +922,7 @@ pub(crate) fn start_rp1_image_with_debug_sram(
             logln!("[RP1LINUXOBS] RP1 PCIe recovered; continuing to Linux handoff");
             return Ok(());
         }
-        #[cfg(feature = "rp1-spi-overflow-final-record")] { logln!("[RP1OVFFINAL] failure=post-reload-reader-not-reached"); halt(); } #[cfg(feature = "rp1-spi-retained-final-record")]
+        #[cfg(feature = "rp1-spi-deadline-final-record")] { logln!("[RP1DLINEFINAL] failure=post-reload-reader-not-reached"); halt(); } #[cfg(feature = "rp1-spi-overflow-final-record")] { logln!("[RP1OVFFINAL] failure=post-reload-reader-not-reached"); halt(); } #[cfg(feature = "rp1-spi-retained-final-record")]
         {
             logln!("[RP1KEEPFINAL] failure=post-reload-reader-not-reached");
             halt();
@@ -2112,3 +2112,33 @@ macro_rules! logln {
     )
 ))]
 compile_error!("SPI overflow final reader requires the isolated final record ABI");
+
+// Append guards to preserve all prior panic-source line numbers and raw images.
+#[cfg(all(
+    feature = "rp1-spi-deadline-final-record",
+    any(
+        feature = "rp1-spi-peer-final-record",
+        feature = "rp1-spi-rearm-final-record",
+        feature = "rp1-spi-fifo-final-record",
+        feature = "rp1-spi-varied-final-record",
+        feature = "rp1-spi-retained-final-record",
+        feature = "rp1-spi-overflow-final-record"
+    )
+))]
+compile_error!("SPI deadline final reader requires the isolated final record ABI");
+
+#[cfg(all(
+    feature = "rp1-spi-deadline-final-record",
+    any(
+        feature = "rp1-clock-independence-proof",
+        feature = "rp1-inbound-monitor-block-proof",
+        feature = "rp1-boot-rom-dump",
+        feature = "rp1-linux-observe-failure",
+        feature = "skip-rp1-reload",
+        feature = "continue-on-rp1-bootstrap-failure",
+        feature = "rp1-stock-spi0-wrapper-readonly",
+        feature = "rp1-gpio22-start-proof",
+        feature = "rp1-allow-local-dsram-vector-stack"
+    )
+))]
+compile_error!("SPI deadline final reader requires isolated replacement-firmware reload without debugger diagnostics");
