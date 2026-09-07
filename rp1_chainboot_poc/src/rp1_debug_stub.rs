@@ -75,12 +75,12 @@ pub trait Rp1MemoryTransport {
     fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), TransportError>;
 }
 
-#[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record", feature = "rp1-spi-fifo-final-record", feature = "rp1-spi-varied-final-record", feature = "rp1-spi-retained-final-record"))]
-const SPI_FINAL_BYTES: usize = if cfg!(feature = "rp1-spi-retained-final-record") { 448 } else if cfg!(feature = "rp1-spi-varied-final-record") { 448 } else if cfg!(feature = "rp1-spi-fifo-final-record") { 768 } else if cfg!(feature = "rp1-spi-rearm-final-record") { 208 } else { 128 };
-#[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record", feature = "rp1-spi-fifo-final-record", feature = "rp1-spi-varied-final-record", feature = "rp1-spi-retained-final-record"))]
-const SPI_FINAL_MAGIC: [u8; 4] = if cfg!(feature = "rp1-spi-retained-final-record") { *b"S0K2" } else if cfg!(feature = "rp1-spi-varied-final-record") { *b"S0V2" } else if cfg!(feature = "rp1-spi-fifo-final-record") { *b"S0F2" } else if cfg!(feature = "rp1-spi-rearm-final-record") { *b"S0R2" } else { *b"S0P1" };
+#[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record", feature = "rp1-spi-fifo-final-record", feature = "rp1-spi-varied-final-record", feature = "rp1-spi-retained-final-record", feature = "rp1-spi-overflow-final-record"))]
+const SPI_FINAL_BYTES: usize = if cfg!(feature = "rp1-spi-overflow-final-record") { 768 } else if cfg!(feature = "rp1-spi-retained-final-record") { 448 } else if cfg!(feature = "rp1-spi-varied-final-record") { 448 } else if cfg!(feature = "rp1-spi-fifo-final-record") { 768 } else if cfg!(feature = "rp1-spi-rearm-final-record") { 208 } else { 128 };
+#[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record", feature = "rp1-spi-fifo-final-record", feature = "rp1-spi-varied-final-record", feature = "rp1-spi-retained-final-record", feature = "rp1-spi-overflow-final-record"))]
+const SPI_FINAL_MAGIC: [u8; 4] = if cfg!(feature = "rp1-spi-overflow-final-record") { *b"S0O2" } else if cfg!(feature = "rp1-spi-retained-final-record") { *b"S0K2" } else if cfg!(feature = "rp1-spi-varied-final-record") { *b"S0V2" } else if cfg!(feature = "rp1-spi-fifo-final-record") { *b"S0F2" } else if cfg!(feature = "rp1-spi-rearm-final-record") { *b"S0R2" } else { *b"S0P1" };
 
-#[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record", feature = "rp1-spi-fifo-final-record", feature = "rp1-spi-varied-final-record", feature = "rp1-spi-retained-final-record"))]
+#[cfg(any(feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record", feature = "rp1-spi-fifo-final-record", feature = "rp1-spi-varied-final-record", feature = "rp1-spi-retained-final-record", feature = "rp1-spi-overflow-final-record"))]
 fn wait_spi_peer_final<T: Rp1MemoryTransport>(
     transport: &mut T,
     mut delay: impl FnMut(),
@@ -1005,6 +1005,27 @@ impl Rp1PcieTransport {
                 crate::logln!("[RP1KEEPFINAL] readout=complete header-check=match");
             }
             Err(reason) => crate::logln!("[RP1KEEPFINAL] failure={}", reason),
+        }
+    }
+}
+
+// Keep existing panic source locations (and all prior raw images) byte-identical.
+#[cfg(feature = "rp1-spi-overflow-final-record")]
+impl Rp1PcieTransport {
+    pub fn log_spi_overflow_final_result(&mut self) {
+        crate::logln!("[RP1OVFFINAL] wait addr=0x2000fc00 bytes={} polls=2000 interval_ms=20", SPI_FINAL_BYTES);
+        match wait_spi_peer_final(self, || crate::timer::delay_millis(20)) {
+            Ok(record) => {
+                for (chunk, data) in record.chunks_exact(16).enumerate() {
+                    crate::logln!(
+                        "[RP1OVFRESULT] addr=0x{:08x} data={:02x?}",
+                        debug::MAILBOX_ADDR + chunk as u32 * 16,
+                        data
+                    );
+                }
+                crate::logln!("[RP1OVFFINAL] readout=complete header-check=match");
+            }
+            Err(reason) => crate::logln!("[RP1OVFFINAL] failure={}", reason),
         }
     }
 }
