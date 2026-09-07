@@ -16,6 +16,19 @@ extern crate alloc;
 ))]
 compile_error!("stock SPI0 reader requires the isolated non-debug reload path");
 
+#[cfg(all(
+    feature = "rp1-spi-peer-final-record",
+    any(
+        feature = "rp1-clock-independence-proof",
+        feature = "rp1-inbound-monitor-block-proof",
+        feature = "rp1-boot-rom-dump",
+        feature = "rp1-linux-observe-failure",
+        feature = "skip-rp1-reload",
+        feature = "continue-on-rp1-bootstrap-failure"
+    )
+))]
+compile_error!("SPI peer final reader requires isolated replacement-firmware reload");
+
 use alloc::alloc::Layout;
 use core::alloc::{GlobalAlloc, Layout as CoreLayout};
 use core::arch::global_asm;
@@ -799,6 +812,11 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                                 crate::timer::delay_millis(500);
                                 transport.log_probe("post-rp1-reload-reinit+500ms");
                                 transport.log_phase_readback("post-rp1-reload-reinit+500ms");
+                                #[cfg(feature = "rp1-spi-peer-final-record")]
+                                {
+                                    transport.log_spi_peer_final_result();
+                                    halt();
+                                }
                                 transport.log_pll_core_lock_result("post-rp1-reload-reinit+500ms");
                                 #[cfg(feature = "rp1-boot-rom-dump")]
                                 transport.log_boot_rom_dump("post-rp1-reload-reinit+500ms");
@@ -879,6 +897,11 @@ pub(crate) fn start_rp1_image_with_debug_sram(
         if cfg!(feature = "rp1-linux-observe-failure") {
             logln!("[RP1LINUXOBS] RP1 PCIe recovered; continuing to Linux handoff");
             return Ok(());
+        }
+        #[cfg(feature = "rp1-spi-peer-final-record")]
+        {
+            logln!("[RP1PEERFINAL] failure=post-reload-reader-not-reached");
+            halt();
         }
         let mut transport =
             rp1_bootstrap::rp1_debug_stub::Rp1PcieTransport::new(sram_base, sram_size);
