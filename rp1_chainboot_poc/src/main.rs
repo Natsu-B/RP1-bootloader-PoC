@@ -831,7 +831,7 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                                 crate::timer::delay_millis(500);
                                 transport.log_probe("post-rp1-reload-reinit+500ms");
                                 transport.log_phase_readback("post-rp1-reload-reinit+500ms");
-                                #[cfg(feature = "rp1-i2c-read1-final-record")] { transport.log_i2c_read1_final_result(); halt(); } #[cfg(feature = "rp1-i2c-stop-final-record")] { transport.log_i2c_stop_final_result(); halt(); } #[cfg(feature = "rp1-i2c-readonly-final-record")] { transport.log_i2c_readonly_final_result(); halt(); } #[cfg(feature = "rp1-spi-deadline-final-record")] { transport.log_spi_deadline_final_result(); halt(); } #[cfg(feature = "rp1-spi-overflow-final-record")] { transport.log_spi_overflow_final_result(); halt(); } #[cfg(feature = "rp1-spi-retained-final-record")]
+                                #[cfg(feature = "rp1-i2c-read1-final-record")] { transport.log_i2c_read1_final_result(); log_rp1_i2c1_host_alias_snapshot(&rp1, "read1-terminal-q0"); crate::timer::delay_millis(500); log_rp1_i2c1_host_alias_snapshot(&rp1, "read1-terminal-q1"); halt(); } #[cfg(feature = "rp1-i2c-stop-final-record")] { transport.log_i2c_stop_final_result(); halt(); } #[cfg(feature = "rp1-i2c-readonly-final-record")] { transport.log_i2c_readonly_final_result(); halt(); } #[cfg(feature = "rp1-spi-deadline-final-record")] { transport.log_spi_deadline_final_result(); halt(); } #[cfg(feature = "rp1-spi-overflow-final-record")] { transport.log_spi_overflow_final_result(); halt(); } #[cfg(feature = "rp1-spi-retained-final-record")]
                                 {
                                     transport.log_spi_retained_final_result();
                                     halt();
@@ -1369,7 +1369,7 @@ fn log_rp1_i2c1_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, lab
         logln!("[RP1I2C1HOST] {} I2C1 CPU alias conversion failed", label);
         return;
     };
-
+    if cpu_base & 3 != 0 || cpu_base.checked_add(0xff).is_none() { logln!("[RP1I2C1HOST] {} I2C1 CPU alias unaligned or final read overflow", label); return; }
     unsafe {
         let con = core::ptr::read_volatile(cpu_base as *const u32);
         let tar = core::ptr::read_volatile((cpu_base + 0x04) as *const u32);
