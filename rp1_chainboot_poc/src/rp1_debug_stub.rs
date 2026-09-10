@@ -138,6 +138,33 @@ pub struct Rp1PcieTransport {
 }
 
 impl Rp1PcieTransport {
+    /// Bounded read-only proc0 RTOS observer. No mailbox command, clock write,
+    /// Linux kernel/config modification, or generic MMIO request is involved.
+    #[cfg(feature = "rp1-rtos-record")]
+    pub fn log_rtos_samples(&mut self) {
+        let mut snapshot = [0u32; 256];
+        let Ok(base) = self.translate_rp1_addr(0x2000_f800, 1024) else {
+            crate::logln!("[RTOS] invalid BAR2 range");
+            return;
+        };
+        if base & 3 != 0 { return; }
+        for sample in 0..31u32 {
+            for (index, word) in snapshot.iter_mut().enumerate() {
+                // Aligned 32-bit reads avoid byte-tearing of live u32 counters.
+                // The entire record is NOT claimed to be an atomic snapshot.
+                *word = unsafe { ((base + index * 4) as *const u32).read_volatile() };
+            }
+            crate::logln!("[RTOS] sample={} begin", sample);
+            for (row, words) in snapshot.chunks_exact(4).enumerate() {
+                crate::logln!("[RTOS] {} {:03} {:08x} {:08x} {:08x} {:08x}",
+                    sample, row * 4, words[0], words[1], words[2], words[3]);
+            }
+            crate::logln!("[RTOS] sample={} end", sample);
+            crate::timer::delay_millis(1000);
+        }
+        crate::logln!("[RTOS] observer-complete read-only=1");
+    }
+
     pub fn new(sram_base: usize, sram_size: usize) -> Self {
         Self {
             sram_base,
