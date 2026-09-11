@@ -148,12 +148,7 @@ impl Rp1PcieTransport {
             return;
         };
         if base & 3 != 0 { return; }
-        // Thirty post-warmup intervals exceed30minutes without increasing the
-        // per-record SRAM reads/log volume. The default31/1s observer is kept.
-        let (samples, interval_ms) = if cfg!(feature = "rp1-rtos-soak") {
-            (34u32, 60_000)
-        } else { (31u32, 1000) };
-        for sample in 0..samples {
+        for sample in 0..(if cfg!(feature = "rp1-rtos-soak") { 34u32 } else { 31u32 }) {
             for (index, word) in snapshot.iter_mut().enumerate() {
                 // Aligned 32-bit reads avoid byte-tearing of live u32 counters.
                 // The entire record is NOT claimed to be an atomic snapshot.
@@ -165,7 +160,7 @@ impl Rp1PcieTransport {
                     sample, row * 4, words[0], words[1], words[2], words[3]);
             }
             crate::logln!("[RTOS] sample={} end", sample);
-            crate::timer::delay_millis(interval_ms);
+            crate::timer::delay_millis(if cfg!(feature = "rp1-rtos-soak") { 60_000 } else { 1000 });
         }
         crate::logln!("[RTOS] observer-complete read-only=1");
     }
