@@ -138,8 +138,8 @@ pub struct Rp1PcieTransport {
 }
 
 impl Rp1PcieTransport {
-    /// Bounded read-only proc0 RTOS observer. No mailbox command, clock write,
-    /// Linux kernel/config modification, or generic MMIO request is involved.
+    /// Default read-only proc0 RTOS observer. Explicit watchdog feature adds
+    /// one fixed SRAM request; no host clock write, Linux change or generic RPC.
     #[cfg(feature = "rp1-rtos-record")]
     pub fn log_rtos_samples(&mut self) {
         let mut snapshot = [0u32; 256];
@@ -148,6 +148,10 @@ impl Rp1PcieTransport {
             return;
         };
         if base & 3 != 0 { return; }
+        #[cfg(all(feature = "rp1-rtos-watchdog-receipt", feature = "rp1-rtos-soak"))]
+        compile_error!("Watchdog receipt uses bounded31-sample cadence, not soak");
+        #[cfg(feature = "rp1-rtos-watchdog-receipt")]
+        let mut watchdog_requested = false;
         // Opt-in mixed repetition needs a frozen tail after its ~32-minute workload.
         let samples = if cfg!(feature = "rp1-rtos-mixed-repeat") { 36u32 }
             else if cfg!(feature = "rp1-rtos-soak") { 34u32 } else { 31u32 };
@@ -157,6 +161,28 @@ impl Rp1PcieTransport {
                 // The entire record is NOT claimed to be an atomic snapshot.
                 *word = unsafe { ((base + index * 4) as *const u32).read_volatile() };
             }
+            #[cfg(feature = "rp1-rtos-watchdog-receipt")]
+            if !watchdog_requested && snapshot[0] == 0x3130_5452 && snapshot[1] == 1 &&
+                snapshot[96] == u32::from_le_bytes(*b"WDT2") && snapshot[97] == 2 &&
+                snapshot[98] == 1 && snapshot[99] == 0
+            {
+                // Fixed WQ02 request into this version's host-owned32 bytes.
+                // Payload/checksum first, commit token last. No retry/fallback.
+                let request = [u32::from_le_bytes(*b"WQ02"), 2, 1, 1, 0x00ff_ffff, 256, 0,
+                    0x5744_5432 ^ 2 ^ 1 ^ 1 ^ 0x00ff_ffff ^ 256];
+                let target = (base + 176*4) as *mut u32;
+                unsafe {
+                    for i in 1..8 { target.add(i).write_volatile(request[i]); }
+                    core::arch::asm!("dsb sy", options(nostack));
+                    target.write_volatile(request[0]);
+                    core::arch::asm!("dsb sy", options(nostack));
+                }
+                watchdog_requested = true;
+                let actual: [u32; 8] = core::array::from_fn(|i| unsafe { target.add(i).read_volatile() });
+                crate::logln!("[WDT2] request {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                    actual[0], actual[1], actual[2], actual[3], actual[4], actual[5], actual[6], actual[7]);
+                if actual != request { crate::logln!("[WDT2] request readback failed"); return; }
+            }
             crate::logln!("[RTOS] sample={} begin", sample);
             for (row, words) in snapshot.chunks_exact(4).enumerate() {
                 crate::logln!("[RTOS] {} {:03} {:08x} {:08x} {:08x} {:08x}",
@@ -165,7 +191,10 @@ impl Rp1PcieTransport {
             crate::logln!("[RTOS] sample={} end", sample);
             crate::timer::delay_millis(if cfg!(feature = "rp1-rtos-soak") { 60_000 } else { 1000 });
         }
+        #[cfg(not(feature = "rp1-rtos-watchdog-receipt"))]
         crate::logln!("[RTOS] observer-complete read-only=1");
+        #[cfg(feature = "rp1-rtos-watchdog-receipt")]
+        crate::logln!("[RTOS] observer-complete read-only=0 watchdog-request={}", u32::from(watchdog_requested));
     }
 
     pub fn new(sram_base: usize, sram_size: usize) -> Self {
