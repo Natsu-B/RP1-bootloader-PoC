@@ -148,7 +148,10 @@ impl Rp1PcieTransport {
             return;
         };
         if base & 3 != 0 { return; }
-        for sample in 0..(if cfg!(feature = "rp1-rtos-soak") { 34u32 } else { 31u32 }) {
+        // Opt-in mixed repetition needs a frozen tail after its ~32-minute workload.
+        let samples = if cfg!(feature = "rp1-rtos-mixed-repeat") { 36u32 }
+            else if cfg!(feature = "rp1-rtos-soak") { 34u32 } else { 31u32 };
+        for sample in 0..samples {
             for (index, word) in snapshot.iter_mut().enumerate() {
                 // Aligned 32-bit reads avoid byte-tearing of live u32 counters.
                 // The entire record is NOT claimed to be an atomic snapshot.
