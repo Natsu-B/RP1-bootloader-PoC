@@ -199,7 +199,7 @@ impl Rp1PcieTransport {
         crate::logln!("[RTOS] observer-complete read-only=0 watchdog-request={}", u32::from(watchdog_requested));
     }
 
-    /// WDT3 instrumentation: record an already-disabled receipt, issue the
+    /// WDT3/WDT4: record an already-disabled receipt, issue the
     /// final ACK without readback, then return to the caller's immediate halt.
     /// Not an expiry observer admission and not a generic MMIO request API.
     #[cfg(feature = "rp1-rtos-watchdog-quiescence")]
@@ -207,18 +207,21 @@ impl Rp1PcieTransport {
         let Ok(base) = self.translate_rp1_addr(0x2000_f800, 1024) else { return; };
         if base & 3 != 0 { return; }
         const LOAD: u32 = 0x00ff_ffff;
-        const REQUEST: [u32; 8] = [u32::from_le_bytes(*b"WQ03"),3,1,1,LOAD,256,0,
-            0x5744_5432 ^ 3 ^ 1 ^ 1 ^ LOAD ^ 256];
-        const ACK: [u32; 8] = [u32::from_le_bytes(*b"QA03"),3,1,2,0,0,0,
-            0x5744_5432 ^ 3 ^ 1 ^ 2];
+        const POSTACK: bool = cfg!(feature = "rp1-rtos-watchdog-postack");
+        const VERSION: u32 = if POSTACK { 4 } else { 3 };
+        const MAGIC: u32 = u32::from_le_bytes(if POSTACK { *b"WDT4" } else { *b"WDT3" });
+        const REQUEST: [u32; 8] = [u32::from_le_bytes(if POSTACK { *b"WQ04" } else { *b"WQ03" }),VERSION,1,1,LOAD,256,0,
+            0x5744_5432 ^ VERSION ^ 1 ^ 1 ^ LOAD ^ 256];
+        const ACK: [u32; 8] = [u32::from_le_bytes(if POSTACK { *b"QA04" } else { *b"QA03" }),VERSION,1,2,0,0,0,
+            0x5744_5432 ^ VERSION ^ 1 ^ 2];
         let target = (base + 176*4) as *mut u32;
         let mut requested = false;
         for _ in 0..240 {
             let w: [u32; 256] = core::array::from_fn(|i| unsafe { ((base+i*4) as *const u32).read_volatile() });
             if w[0] == 0x3130_5452 && (w[3] != 0 || w[4] != 0 || w[99] != 0) {
-                crate::logln!("[WQ3] failure=firmware-error"); return;
+                crate::logln!("[WQ{}] failure=firmware-error",VERSION); return;
             }
-            if w[0] != 0x3130_5452 || w[96] != u32::from_le_bytes(*b"WDT3") || w[97] != 3 {
+            if w[0] != 0x3130_5452 || w[96] != MAGIC || w[97] != VERSION {
                 crate::timer::delay_millis(50); continue;
             }
             if !requested && w[98] == 1 {
@@ -229,9 +232,9 @@ impl Rp1PcieTransport {
                     core::arch::asm!("dsb sy", options(nostack));
                 }
                 let actual: [u32; 8] = core::array::from_fn(|i| unsafe { target.add(i).read_volatile() });
-                crate::logln!("[WQ3] request {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                crate::logln!("[WQ{}] request {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",VERSION,
                     actual[0],actual[1],actual[2],actual[3],actual[4],actual[5],actual[6],actual[7]);
-                if actual != REQUEST { crate::logln!("[WQ3] failure=request-readback"); return; }
+                if actual != REQUEST { crate::logln!("[WQ{}] failure=request-readback",VERSION); return; }
                 requested = true;
             }
             if requested && w[98] == 4 {
@@ -243,17 +246,17 @@ impl Rp1PcieTransport {
                     w[176..184] == REQUEST && w[145..176].iter().all(|x| *x == 0) &&
                     w[184..256].iter().all(|x| *x == 0) && (w[70]|w[86]) == 0 &&
                     (0..4).all(|i| w[128+i] > 0 && w[132+i] > w[128+i]);
-                if !valid { crate::logln!("[WQ3] failure=disabled-receipt"); return; }
+                if !valid { crate::logln!("[WQ{}] failure=disabled-receipt",VERSION); return; }
                 for (row, words) in w.chunks_exact(4).enumerate() {
-                    crate::logln!("[WQ3] record {:03} {:08x} {:08x} {:08x} {:08x}",
+                    crate::logln!("[WQ{}] record {:03} {:08x} {:08x} {:08x} {:08x}",VERSION,
                         row*4,words[0],words[1],words[2],words[3]);
                 }
                 // Reload/PCIe reinitialization occurred after the TFTP driver's
                 // release. Check the current mapping before committing the ACK.
                 // Failure leaves the already-disabled M3 receipt unacknowledged.
                 match arch_hal::soc::bcm2712::rp1_gem::Rp1Gem::verify_stopped_from_rp1_config(rp1) {
-                    Ok(ncr) => crate::logln!("[WQ3] pre-ack-gem-stop ncr=0x{:08x}", ncr),
-                    Err(err) => { crate::logln!("[WQ3] failure=pre-ack-gem-stop {:?}", err); return; }
+                    Ok(ncr) => crate::logln!("[WQ{}] pre-ack-gem-stop ncr=0x{:08x}",VERSION,ncr),
+                    Err(err) => { crate::logln!("[WQ{}] failure=pre-ack-gem-stop {:?}",VERSION,err); return; }
                 }
                 unsafe {
                     for i in 1..8 { target.add(i).write_volatile(ACK[i]); }
@@ -262,14 +265,14 @@ impl Rp1PcieTransport {
                     core::arch::asm!("dsb sy", options(nostack));
                 }
                 // Deliberately no target read here or any later RP1 operation.
-                crate::logln!("[WQ3] ack-issued {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                crate::logln!("[WQ{}] ack-issued {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",VERSION,
                     ACK[0],ACK[1],ACK[2],ACK[3],ACK[4],ACK[5],ACK[6],ACK[7]);
-                crate::logln!("[WQ3] observer-quiesced no-more-rp1-access=1");
+                crate::logln!("[WQ{}] observer-quiesced no-more-rp1-access=1",VERSION);
                 return;
             }
             crate::timer::delay_millis(50);
         }
-        crate::logln!("[WQ3] failure=bounded-wait");
+        crate::logln!("[WQ{}] failure=bounded-wait",VERSION);
     }
 
     pub fn new(sram_base: usize, sram_size: usize) -> Self {
