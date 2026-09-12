@@ -209,11 +209,12 @@ impl Rp1PcieTransport {
         const LOAD: u32 = 0x00ff_ffff;
         const POSTACK: bool = cfg!(feature = "rp1-rtos-watchdog-postack");
         const LATE_CONTROL: bool = cfg!(feature = "rp1-rtos-watchdog-late-disable");
-        const VERSION: u32 = if LATE_CONTROL { 5 } else if POSTACK { 4 } else { 3 };
-        const MAGIC: u32 = u32::from_le_bytes(if LATE_CONTROL { *b"WDT5" } else if POSTACK { *b"WDT4" } else { *b"WDT3" });
-        const REQUEST: [u32; 8] = [u32::from_le_bytes(if LATE_CONTROL { *b"WQ05" } else if POSTACK { *b"WQ04" } else { *b"WQ03" }),VERSION,1,1,LOAD,256,0,
+        const SELFTEST: bool = cfg!(feature = "rp1-rtos-reset-entry-selftest");
+        const VERSION: u32 = if SELFTEST {6} else if LATE_CONTROL { 5 } else if POSTACK { 4 } else { 3 };
+        const MAGIC: u32 = u32::from_le_bytes(if SELFTEST {*b"WDT6"} else if LATE_CONTROL { *b"WDT5" } else if POSTACK { *b"WDT4" } else { *b"WDT3" });
+        let mut request: [u32; 8] = [u32::from_le_bytes(if SELFTEST {*b"WQ06"} else if LATE_CONTROL { *b"WQ05" } else if POSTACK { *b"WQ04" } else { *b"WQ03" }),VERSION,1,1,LOAD,256,0,
             0x5744_5432 ^ VERSION ^ 1 ^ 1 ^ LOAD ^ 256];
-        const ACK: [u32; 8] = [u32::from_le_bytes(if LATE_CONTROL { *b"QA05" } else if POSTACK { *b"QA04" } else { *b"QA03" }),VERSION,1,2,0,0,0,
+        let mut ack: [u32; 8] = [u32::from_le_bytes(if SELFTEST {*b"QA06"} else if LATE_CONTROL { *b"QA05" } else if POSTACK { *b"QA04" } else { *b"QA03" }),VERSION,1,2,0,0,0,
             0x5744_5432 ^ VERSION ^ 1 ^ 2];
         let target = (base + 176*4) as *mut u32;
         let mut requested = false;
@@ -226,16 +227,23 @@ impl Rp1PcieTransport {
                 crate::timer::delay_millis(50); continue;
             }
             if !requested && w[98] == 1 {
+                if SELFTEST {
+                    // Selected diagnostic nonce, not randomness/authentication.
+                    // Formal cohort must reject repeated nonce across captures.
+                    let nonce=((w[27]^(w[27]>>16))&0xffff).max(1);
+                    request[6]=nonce;request[7]^=nonce;
+                    ack[6]=nonce;ack[7]^=nonce;
+                }
                 unsafe {
-                    for i in 1..8 { target.add(i).write_volatile(REQUEST[i]); }
+                    for i in 1..8 { target.add(i).write_volatile(request[i]); }
                     core::arch::asm!("dsb sy", options(nostack));
-                    target.write_volatile(REQUEST[0]);
+                    target.write_volatile(request[0]);
                     core::arch::asm!("dsb sy", options(nostack));
                 }
                 let actual: [u32; 8] = core::array::from_fn(|i| unsafe { target.add(i).read_volatile() });
                 crate::logln!("[WQ{}] request {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",VERSION,
                     actual[0],actual[1],actual[2],actual[3],actual[4],actual[5],actual[6],actual[7]);
-                if actual != REQUEST { crate::logln!("[WQ{}] failure=request-readback",VERSION); return; }
+                if actual != request { crate::logln!("[WQ{}] failure=request-readback",VERSION); return; }
                 requested = true;
             }
             if requested && w[98] == 4 {
@@ -244,7 +252,7 @@ impl Rp1PcieTransport {
                     (w[107]&LOAD) > (w[108]&LOAD) && (w[108]&LOAD) > LOAD-65536 &&
                     w[109] & 0xff00_0000 == 0 && (256..=1000).contains(&w[110]) &&
                     (1..=100_000).contains(&w[111]) && w[112..116] == [2,2,0,0] &&
-                    w[176..184] == REQUEST && w[145..176].iter().all(|x| *x == 0) &&
+                    w[176..184] == request && (!SELFTEST || (w[136..139]==[0,0,0] && w[139]==request[6])) && w[145..176].iter().all(|x| *x == 0) &&
                     w[184..256].iter().all(|x| *x == 0) && (w[70]|w[86]) == 0 &&
                     (0..4).all(|i| w[128+i] > 0 && w[132+i] > w[128+i]);
                 if !valid { crate::logln!("[WQ{}] failure=disabled-receipt",VERSION); return; }
@@ -260,14 +268,14 @@ impl Rp1PcieTransport {
                     Err(err) => { crate::logln!("[WQ{}] failure=pre-ack-gem-stop {:?}",VERSION,err); return; }
                 }
                 unsafe {
-                    for i in 1..8 { target.add(i).write_volatile(ACK[i]); }
+                    for i in 1..8 { target.add(i).write_volatile(ack[i]); }
                     core::arch::asm!("dsb sy", options(nostack));
-                    target.write_volatile(ACK[0]);
+                    target.write_volatile(ack[0]);
                     core::arch::asm!("dsb sy", options(nostack));
                 }
                 // Deliberately no target read here or any later RP1 operation.
                 crate::logln!("[WQ{}] ack-issued {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",VERSION,
-                    ACK[0],ACK[1],ACK[2],ACK[3],ACK[4],ACK[5],ACK[6],ACK[7]);
+                    ack[0],ack[1],ack[2],ack[3],ack[4],ack[5],ack[6],ack[7]);
                 crate::logln!("[WQ{}] observer-quiesced no-more-rp1-access=1",VERSION);
                 return;
             }
