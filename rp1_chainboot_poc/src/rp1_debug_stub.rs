@@ -277,10 +277,10 @@ impl Rp1PcieTransport {
                     target.write_volatile(ack[0]);
                     core::arch::asm!("dsb sy", options(nostack));
                 }
-                // Deliberately no target read here or any later RP1 operation.
+                #[cfg(feature = "rp1-rtos-warm-late-record")] let ack_counter = arch_timer::read_counter();
                 crate::logln!("[WQ{}] ack-issued {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",VERSION,
                     ack[0],ack[1],ack[2],ack[3],ack[4],ack[5],ack[6],ack[7]);
-                crate::logln!("[WQ{}] observer-quiesced no-more-rp1-access=1",VERSION);
+                #[cfg(not(feature = "rp1-rtos-warm-late-record"))] crate::logln!("[WQ{}] observer-quiesced no-more-rp1-access=1",VERSION); #[cfg(feature = "rp1-rtos-warm-late-record")] log_warm_late_record(base, ack[6], ack_counter);
                 return;
             }
             crate::timer::delay_millis(50);
@@ -1279,4 +1279,75 @@ impl Rp1PcieTransport {
             Err(reason) => crate::logln!("[RP1I2CREAD1FINAL] failure={}", reason),
         }
     }
+}
+
+// Append only: preserve legacy source line locations and feature-off code.
+#[cfg(all(feature = "rp1-rtos-warm-late-record", any(
+    feature = "rp1-rtos-soak", feature = "rp1-rtos-watchdog-late-disable",
+    feature = "rp1-rtos-reset-entry-selftest", feature = "skip-rp1-reload",
+    feature = "continue-on-rp1-bootstrap-failure", feature = "tftp-initramfs",
+    feature = "rp1-spi-peer-final-record", feature = "rp1-spi-rearm-final-record",
+    feature = "rp1-spi-fifo-final-record", feature = "rp1-spi-varied-final-record",
+    feature = "rp1-spi-retained-final-record", feature = "rp1-spi-overflow-final-record",
+    feature = "rp1-spi-deadline-final-record", feature = "rp1-i2c-readonly-final-record",
+    feature = "rp1-i2c-stop-final-record", feature = "rp1-i2c-read1-final-record",
+    feature = "rp1-clock-independence-proof", feature = "rp1-inbound-monitor-block-proof",
+    feature = "rp1-boot-rom-dump", feature = "rp1-linux-observe-failure",
+    feature = "rp1-gpio22-start-proof", feature = "rp1-stock-spi0-wrapper-readonly",
+    feature = "rp1-allow-local-dsram-vector-stack", feature = "log-semihosting"
+)))]
+compile_error!("rp1-rtos-warm-late-record requires isolated warm-guard observation");
+
+/// Two bounded reads through the already validated fixed BAR2 SRAM mapping.
+/// No completion input, atomic snapshot, bus timeout, or future-liveness claim.
+#[cfg(feature = "rp1-rtos-warm-late-record")]
+#[inline(never)]
+fn log_warm_late_record(base: usize, nonce: u32, ack_counter: u64) {
+    const IDENTITY: [usize; 12] = [0, 1, 2, 3, 4, 96, 97, 98, 99, 100, 124, 125];
+    let frequency = crate::timer::counter_frequency_hz();
+    if frequency == 0 || frequency.checked_mul(122).is_none_or(|ticks| ticks >= 1u64 << 63)
+        || base.checked_add(1024).is_none() || base & 3 != 0
+    {
+        crate::logln!("[WQLATE] failure=counter-or-range");
+        return;
+    }
+    crate::logln!("[WQLATE] armed version=1 nonce={} counter_hz={} ack_counter={} delays_s=120,122 addr=0x2000f800 bytes=1024 samples=2 bracket_words=12 post-ack-rp1-read=1 post-ack-rp1-write=0 no-reinit=1", nonce, frequency, ack_counter);
+    // ponytail: fixed delay gives no completion input; host receipt-before-BEGIN
+    // is observation order only (UART/USB buffering), not physical causal proof.
+    for (sample, seconds) in [120u64, 122].into_iter().enumerate() {
+        let ticks = frequency * seconds;
+        let deadline_counter = ack_counter.wrapping_add(ticks);
+        while arch_timer::read_counter().wrapping_sub(ack_counter) < ticks {
+            crate::timer::delay_millis(1);
+        }
+        let begin_counter = arch_timer::read_counter();
+        crate::logln!("[WQLATE] sample={} BEGIN deadline_counter={} begin_counter={}", sample, deadline_counter, begin_counter);
+        // BEGIN is emitted before any late RP1 load. All subsequent printing
+        // uses these local arrays (1120 bytes, on the existing 1 MiB EL2 stack).
+        unsafe { core::arch::asm!("dsb sy", options(nostack)); }
+        let read_begin_counter = arch_timer::read_counter();
+        let before: [u32; 12] = core::array::from_fn(|i| unsafe {
+            ((base + IDENTITY[i] * 4) as *const u32).read_volatile()
+        });
+        unsafe { core::arch::asm!("dsb sy", options(nostack)); }
+        let mut snapshot = [0u32; 256];
+        for (index, word) in snapshot.iter_mut().enumerate() {
+            *word = unsafe { ((base + index * 4) as *const u32).read_volatile() };
+        }
+        unsafe { core::arch::asm!("dsb sy", options(nostack)); }
+        let after: [u32; 12] = core::array::from_fn(|i| unsafe {
+            ((base + IDENTITY[i] * 4) as *const u32).read_volatile()
+        });
+        unsafe { core::arch::asm!("dsb sy", options(nostack)); }
+        let read_end_counter = arch_timer::read_counter();
+        // Individual aligned words only: stable identity does not make the
+        // live monitor publication atomic. No validity verdict or retry here.
+        crate::logln!("[WQLATE] sample={} identity-before {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}", sample, before[0], before[1], before[2], before[3], before[4], before[5], before[6], before[7], before[8], before[9], before[10], before[11]);
+        for (row, words) in snapshot.chunks_exact(4).enumerate() {
+            crate::logln!("[WQLATE] sample={} words {:03} {:08x} {:08x} {:08x} {:08x}", sample, row * 4, words[0], words[1], words[2], words[3]);
+        }
+        crate::logln!("[WQLATE] sample={} identity-after {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}", sample, after[0], after[1], after[2], after[3], after[4], after[5], after[6], after[7], after[8], after[9], after[10], after[11]);
+        crate::logln!("[WQLATE] sample={} END read_begin_counter={} read_end_counter={}", sample, read_begin_counter, read_end_counter);
+    }
+    crate::logln!("[WQLATE] observer-complete samples=2 post-ack-rp1-read=1 post-ack-rp1-write=0 no-reinit=1");
 }
