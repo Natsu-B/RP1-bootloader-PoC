@@ -208,11 +208,12 @@ impl Rp1PcieTransport {
         if base & 3 != 0 { return; }
         const LOAD: u32 = 0x00ff_ffff;
         const POSTACK: bool = cfg!(feature = "rp1-rtos-watchdog-postack");
-        const VERSION: u32 = if POSTACK { 4 } else { 3 };
-        const MAGIC: u32 = u32::from_le_bytes(if POSTACK { *b"WDT4" } else { *b"WDT3" });
-        const REQUEST: [u32; 8] = [u32::from_le_bytes(if POSTACK { *b"WQ04" } else { *b"WQ03" }),VERSION,1,1,LOAD,256,0,
+        const LATE_CONTROL: bool = cfg!(feature = "rp1-rtos-watchdog-late-disable");
+        const VERSION: u32 = if LATE_CONTROL { 5 } else if POSTACK { 4 } else { 3 };
+        const MAGIC: u32 = u32::from_le_bytes(if LATE_CONTROL { *b"WDT5" } else if POSTACK { *b"WDT4" } else { *b"WDT3" });
+        const REQUEST: [u32; 8] = [u32::from_le_bytes(if LATE_CONTROL { *b"WQ05" } else if POSTACK { *b"WQ04" } else { *b"WQ03" }),VERSION,1,1,LOAD,256,0,
             0x5744_5432 ^ VERSION ^ 1 ^ 1 ^ LOAD ^ 256];
-        const ACK: [u32; 8] = [u32::from_le_bytes(if POSTACK { *b"QA04" } else { *b"QA03" }),VERSION,1,2,0,0,0,
+        const ACK: [u32; 8] = [u32::from_le_bytes(if LATE_CONTROL { *b"QA05" } else if POSTACK { *b"QA04" } else { *b"QA03" }),VERSION,1,2,0,0,0,
             0x5744_5432 ^ VERSION ^ 1 ^ 2];
         let target = (base + 176*4) as *mut u32;
         let mut requested = false;
