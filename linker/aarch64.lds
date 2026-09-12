@@ -44,7 +44,7 @@ SECTIONS {
     __data_end = ABSOLUTE(.);
   } :data
 
-  .bss ALIGN(8) (NOLOAD) : {
+  .bss ALIGN(64) (NOLOAD) : {
     *(.bss .bss.*)
     *(COMMON)
     . = ALIGN(64);
@@ -91,6 +91,7 @@ SECTIONS {
   ASSERT(_PROGRAM_START == 0x80000, "PROGRAM must start at 0x80000")
   ASSERT(_PROGRAM_START < _PROGRAM_END, "PROGRAM range invalid")
   ASSERT(_BSS_START <= _BSS_END, "BSS range invalid")
+  ASSERT((_BSS_START & 63) == 0, "BSS start must be 64-byte aligned")
   ASSERT(_STACK_BOTTOM + 0x10000 <= _STACK_TOP, "STACK shortage")
   ASSERT((_STACK_BOTTOM & 0xFFF) == 0, "STACK_BOTTOM must be 4KB aligned")
   ASSERT((_STACK_TOP & 0xF) == 0, "STACK_TOP not 16-byte aligned")

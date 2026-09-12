@@ -58,6 +58,7 @@ use arch_hal::soc::bcm2712;
 use block_device_api::BlockDevice;
 use dtb::DtbParser;
 
+mod allocation;
 mod bcm2712_aon;
 mod bcm2712_i2c;
 mod boot_context;
@@ -71,6 +72,8 @@ mod net_boot;
 mod panic;
 mod placement;
 mod rp1_bootstrap;
+#[cfg(feature = "rp1-rtos-watchdog-refresh")]
+mod watchdog_refresh;
 #[cfg(feature = "rp1-clock-independence-proof")]
 mod rp1_clock_independence;
 mod rp1_config;
@@ -1836,14 +1839,14 @@ unsafe impl GlobalAlloc for BumpAllocator {
         // SAFETY: the PoC runs single-core before Linux handoff, so the bump pointer does not
         // need atomic RMW instructions while MMU/cache attributes are still firmware-defined.
         let current = unsafe { *self.offset.get() };
-        let aligned = (current + align - 1) & !(align - 1);
-        let next = match aligned.checked_add(size) {
-            Some(next) if next <= HEAP_SIZE => next,
-            _ => return core::ptr::null_mut(),
+        let heap = unsafe { (*self.heap.get()).as_mut_ptr() };
+        let (aligned, next) = match allocation::aligned_range(heap as usize, current, HEAP_SIZE, size, align) {
+            Some(range) => range,
+            None => return core::ptr::null_mut(),
         };
         unsafe {
             *self.offset.get() = next;
-            (*self.heap.get()).as_mut_ptr().add(aligned)
+            heap.add(aligned)
         }
     }
 

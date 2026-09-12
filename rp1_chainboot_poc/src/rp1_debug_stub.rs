@@ -152,6 +152,10 @@ impl Rp1PcieTransport {
         compile_error!("Watchdog receipt uses bounded31-sample cadence, not soak");
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
         let mut watchdog_requested = false;
+        #[cfg(feature = "rp1-rtos-watchdog-receipt")]
+        let (watchdog_magic, watchdog_version, watchdog_label) = if cfg!(feature = "rp1-rtos-watchdog-refresh") {
+            (u32::from_le_bytes(*b"WDL1"), 10, "WDL1")
+        } else { (u32::from_le_bytes(*b"WDT2"), 2, "WDT2") };
         // Opt-in mixed repetition needs a frozen tail after its ~32-minute workload.
         let samples = if cfg!(feature = "rp1-rtos-mixed-repeat") { 36u32 }
             else if cfg!(feature = "rp1-rtos-soak") { 34u32 } else { 31u32 };
@@ -163,13 +167,16 @@ impl Rp1PcieTransport {
             }
             #[cfg(feature = "rp1-rtos-watchdog-receipt")]
             if !watchdog_requested && snapshot[0] == 0x3130_5452 && snapshot[1] == 1 &&
-                snapshot[96] == u32::from_le_bytes(*b"WDT2") && snapshot[97] == 2 &&
+                snapshot[96] == watchdog_magic && snapshot[97] == watchdog_version &&
                 snapshot[98] == 1 && snapshot[99] == 0
             {
-                // Fixed WQ02 request into this version's host-owned32 bytes.
+                // Fixed versioned request into this version's host-owned32 bytes.
                 // Payload/checksum first, commit token last. No retry/fallback.
+                #[cfg(not(feature = "rp1-rtos-watchdog-refresh"))]
                 let request = [u32::from_le_bytes(*b"WQ02"), 2, 1, 1, 0x00ff_ffff, 256, 0,
                     0x5744_5432 ^ 2 ^ 1 ^ 1 ^ 0x00ff_ffff ^ 256];
+                #[cfg(feature = "rp1-rtos-watchdog-refresh")]
+                let request = crate::watchdog_refresh::request(snapshot[27]);
                 let target = (base + 176*4) as *mut u32;
                 unsafe {
                     for i in 1..8 { target.add(i).write_volatile(request[i]); }
@@ -179,9 +186,9 @@ impl Rp1PcieTransport {
                 }
                 watchdog_requested = true;
                 let actual: [u32; 8] = core::array::from_fn(|i| unsafe { target.add(i).read_volatile() });
-                crate::logln!("[WDT2] request {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
-                    actual[0], actual[1], actual[2], actual[3], actual[4], actual[5], actual[6], actual[7]);
-                if actual != request { crate::logln!("[WDT2] request readback failed"); return; }
+                crate::logln!("[{}] request {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                    watchdog_label, actual[0], actual[1], actual[2], actual[3], actual[4], actual[5], actual[6], actual[7]);
+                if actual != request { crate::logln!("[{}] request readback failed", watchdog_label); return; }
             }
             crate::logln!("[RTOS] sample={} begin", sample);
             for (row, words) in snapshot.chunks_exact(4).enumerate() {

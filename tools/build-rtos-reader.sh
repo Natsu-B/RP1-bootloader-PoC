@@ -4,7 +4,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-rtos-reader.sh /new/output' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_READER_FEATURE:-rp1-rtos-record}
-case "$feature" in rp1-rtos-watchdog-receipt|rp1-rtos-record|rp1-rtos-soak|rp1-rtos-mixed-repeat) ;; *) exit 2 ;; esac
+case "$feature" in rp1-rtos-watchdog-refresh|rp1-rtos-watchdog-receipt|rp1-rtos-record|rp1-rtos-soak|rp1-rtos-mixed-repeat) ;; *) exit 2 ;; esac
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
@@ -14,6 +14,14 @@ git rev-parse HEAD
 printf 'selected_feature=%s\n' "$feature"
 git diff --binary > "$out/source.diff"
 git diff --cached --binary > "$out/index.diff"
+cp "$repo/rp1_chainboot_poc/src/allocation.rs" "$out/allocation.rs"
+rustc +stable --edition=2024 -C strip=debuginfo --test "$out/allocation.rs" -o "$out/allocation-test"
+"$out/allocation-test" > "$out/allocation-host-test.txt"
+if [[ "$feature" == rp1-rtos-watchdog-refresh ]]; then
+    cp "$repo/rp1_chainboot_poc/src/watchdog_refresh.rs" "$out/watchdog_refresh.rs"
+    rustc +stable --edition=2024 -C strip=debuginfo --test "$out/watchdog_refresh.rs" -o "$out/request-test"
+    "$out/request-test" > "$out/request-host-test.txt"
+fi
 export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1 CARGO_ENCODED_RUSTFLAGS=''
 export CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=debuginfo
 # build.rs already supplies the linker script; do not add the .cargo flag twice.
