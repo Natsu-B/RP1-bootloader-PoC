@@ -4,7 +4,7 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-rtos-reader.sh /new/output' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_READER_FEATURE:-rp1-rtos-record}
-case "$feature" in rp1-rtos-watchdog-kernel-restart|rp1-rtos-watchdog-expiry-entry|rp1-rtos-reset-entry-selftest|rp1-rtos-watchdog-late-disable|rp1-rtos-watchdog-postack|rp1-rtos-watchdog-quiescence|rp1-rtos-watchdog-receipt|rp1-rtos-record|rp1-rtos-soak|rp1-rtos-mixed-repeat) ;; *) exit 2 ;; esac
+case "$feature" in rp1-rtos-watchdog-warm-guard|rp1-rtos-watchdog-kernel-restart|rp1-rtos-watchdog-expiry-entry|rp1-rtos-reset-entry-selftest|rp1-rtos-watchdog-late-disable|rp1-rtos-watchdog-postack|rp1-rtos-watchdog-quiescence|rp1-rtos-watchdog-receipt|rp1-rtos-record|rp1-rtos-soak|rp1-rtos-mixed-repeat) ;; *) exit 2 ;; esac
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
