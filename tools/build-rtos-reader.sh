@@ -25,4 +25,5 @@ cp "${CARGO_TARGET_DIR:-target}/aarch64-unknown-none-softfloat/release/rp1_chain
 llvm-objcopy -O binary "$out/reader.elf" "$out/kernel_2712.img"
 sha256sum "$out/reader.elf" "$out/kernel_2712.img" > "$out/output.sha256"
 llvm-readelf -lSW "$out/reader.elf" > "$out/readelf.txt"
+python3 "$repo/tools/check-reader-elf.py" "$out/reader.elf" > "$out/elf-check.json"
 date --iso-8601=seconds

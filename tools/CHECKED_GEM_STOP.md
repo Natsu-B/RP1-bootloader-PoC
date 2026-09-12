@@ -18,3 +18,10 @@ it does not admit watchdog expiry or resolve unexpected platform resets.
 The existing workspace path patches for io-api/net remain explicit build inputs;
 capture their source state as well as Cargo.lock when reproducing a build.
 No source change to those local dependencies is implied by this patch.
+
+The reader linker now aligns .bss to64 bytes, matching its strongest current
+input alignment, and asserts section alignment and the8-byte zero-loop end.
+`tools/check-reader-elf.py` checks the linked sections, startup symbols and
+stack/guard/Linux placement; the normal build invokes it. The earlier8-byte
+section base produced an lld warning, not evidence of an observed runtime fault.
+Initial warning-bearing artifacts remain historical inputs, not new candidates.
