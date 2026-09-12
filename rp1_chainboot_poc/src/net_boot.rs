@@ -221,8 +221,13 @@ fn boot_kernel_from_tftp_with_lease(
 
     // SAFETY: this is the terminal Linux handoff path. The GEM reference is
     // not used after release; Linux will probe and own the device next.
-    unsafe { gem.release_after_linux_handoff() };
-    crate::logln!("[TFTP] Rp1Gem Linux handoff cleanup complete");
+    let ncr = unsafe { gem.release_after_linux_handoff() }.map_err(|err| {
+        crate::logln!("[TFTP] Rp1Gem Linux handoff refused: {:?}", err);
+        BootError::Rp1Gem
+    })?;
+    crate::logln!(
+        "[TFTP] Rp1Gem Linux handoff cleanup complete ncr=0x{:08x}", ncr
+    );
     #[cfg(feature = "rp1-linux-observe-failure")]
     crate::log_rp1_pcie_raw_diag("pre-linux-handoff");
     linux::clean_dcache_poc(kernel_base, image.image_size);
@@ -495,8 +500,13 @@ fn boot_rp1_from_tftp(
 
     // SAFETY: all downloads are complete and no caller uses the pre-reload GEM
     // after this point. Release before RP1 reset so no stale GEM MMIO follows it.
-    unsafe { gem.release_after_quiesce() };
-    crate::logln!("[TFTP] Rp1Gem release before RP1 reload complete");
+    let ncr = unsafe { gem.release_after_quiesce() }.map_err(|err| {
+        crate::logln!("[TFTP] Rp1Gem stop failed; RP1 reload refused: {:?}", err);
+        BootError::Rp1Gem
+    })?;
+    crate::logln!(
+        "[TFTP] Rp1Gem release before RP1 reload complete ncr=0x{:08x}", ncr
+    );
     #[cfg(feature = "rp1-gdb-debug-stub")]
     crate::start_rp1_image_with_debug_sram(dtb, &image, Some(debug_sram))?;
     #[cfg(not(feature = "rp1-gdb-debug-stub"))]
