@@ -141,9 +141,9 @@ impl Rp1PcieTransport {
     /// Default read-only proc0 RTOS observer. Explicit watchdog feature adds
     /// one fixed SRAM request; no host clock write, Linux change or generic RPC.
     #[cfg(feature = "rp1-rtos-record")]
-    pub fn log_rtos_samples(&mut self) {
+    pub fn log_rtos_samples(&mut self, _rp1: &arch_hal::soc::bcm2712::Rp1Config) {
         #[cfg(feature = "rp1-rtos-watchdog-quiescence")]
-        { self.log_watchdog_quiescence(); return; }
+        { self.log_watchdog_quiescence(_rp1); return; }
         let mut snapshot = [0u32; 256];
         let Ok(base) = self.translate_rp1_addr(0x2000_f800, 1024) else {
             crate::logln!("[RTOS] invalid BAR2 range");
@@ -203,7 +203,7 @@ impl Rp1PcieTransport {
     /// final ACK without readback, then return to the caller's immediate halt.
     /// Not an expiry observer admission and not a generic MMIO request API.
     #[cfg(feature = "rp1-rtos-watchdog-quiescence")]
-    fn log_watchdog_quiescence(&mut self) {
+    fn log_watchdog_quiescence(&mut self, rp1: &arch_hal::soc::bcm2712::Rp1Config) {
         let Ok(base) = self.translate_rp1_addr(0x2000_f800, 1024) else { return; };
         if base & 3 != 0 { return; }
         const LOAD: u32 = 0x00ff_ffff;
@@ -247,6 +247,13 @@ impl Rp1PcieTransport {
                 for (row, words) in w.chunks_exact(4).enumerate() {
                     crate::logln!("[WQ3] record {:03} {:08x} {:08x} {:08x} {:08x}",
                         row*4,words[0],words[1],words[2],words[3]);
+                }
+                // Reload/PCIe reinitialization occurred after the TFTP driver's
+                // release. Check the current mapping before committing the ACK.
+                // Failure leaves the already-disabled M3 receipt unacknowledged.
+                match arch_hal::soc::bcm2712::rp1_gem::Rp1Gem::verify_stopped_from_rp1_config(rp1) {
+                    Ok(ncr) => crate::logln!("[WQ3] pre-ack-gem-stop ncr=0x{:08x}", ncr),
+                    Err(err) => { crate::logln!("[WQ3] failure=pre-ack-gem-stop {:?}", err); return; }
                 }
                 unsafe {
                     for i in 1..8 { target.add(i).write_volatile(ACK[i]); }

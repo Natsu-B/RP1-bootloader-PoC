@@ -830,7 +830,7 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                                 log_rp1_reset_host_alias_snapshot(&rp1, "post-rp1-reload-reinit");
                                 #[cfg(feature = "rp1-rtos-record")]
                                 {
-                                    transport.log_rtos_samples();
+                                    transport.log_rtos_samples(&rp1);
                                     halt();
                                 }
                                 crate::timer::delay_millis(500);
