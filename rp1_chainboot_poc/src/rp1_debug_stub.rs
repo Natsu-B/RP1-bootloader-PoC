@@ -142,6 +142,8 @@ impl Rp1PcieTransport {
     /// one fixed SRAM request; no host clock write, Linux change or generic RPC.
     #[cfg(feature = "rp1-rtos-record")]
     pub fn log_rtos_samples(&mut self) {
+        #[cfg(feature = "rp1-rtos-watchdog-quiescence")]
+        { self.log_watchdog_quiescence(); return; }
         let mut snapshot = [0u32; 256];
         let Ok(base) = self.translate_rp1_addr(0x2000_f800, 1024) else {
             crate::logln!("[RTOS] invalid BAR2 range");
@@ -195,6 +197,72 @@ impl Rp1PcieTransport {
         crate::logln!("[RTOS] observer-complete read-only=1");
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
         crate::logln!("[RTOS] observer-complete read-only=0 watchdog-request={}", u32::from(watchdog_requested));
+    }
+
+    /// WDT3 instrumentation: record an already-disabled receipt, issue the
+    /// final ACK without readback, then return to the caller's immediate halt.
+    /// Not an expiry observer admission and not a generic MMIO request API.
+    #[cfg(feature = "rp1-rtos-watchdog-quiescence")]
+    fn log_watchdog_quiescence(&mut self) {
+        let Ok(base) = self.translate_rp1_addr(0x2000_f800, 1024) else { return; };
+        if base & 3 != 0 { return; }
+        const LOAD: u32 = 0x00ff_ffff;
+        const REQUEST: [u32; 8] = [u32::from_le_bytes(*b"WQ03"),3,1,1,LOAD,256,0,
+            0x5744_5432 ^ 3 ^ 1 ^ 1 ^ LOAD ^ 256];
+        const ACK: [u32; 8] = [u32::from_le_bytes(*b"QA03"),3,1,2,0,0,0,
+            0x5744_5432 ^ 3 ^ 1 ^ 2];
+        let target = (base + 176*4) as *mut u32;
+        let mut requested = false;
+        for _ in 0..240 {
+            let w: [u32; 256] = core::array::from_fn(|i| unsafe { ((base+i*4) as *const u32).read_volatile() });
+            if w[0] == 0x3130_5452 && (w[3] != 0 || w[4] != 0 || w[99] != 0) {
+                crate::logln!("[WQ3] failure=firmware-error"); return;
+            }
+            if w[0] != 0x3130_5452 || w[96] != u32::from_le_bytes(*b"WDT3") || w[97] != 3 {
+                crate::timer::delay_millis(50); continue;
+            }
+            if !requested && w[98] == 1 {
+                unsafe {
+                    for i in 1..8 { target.add(i).write_volatile(REQUEST[i]); }
+                    core::arch::asm!("dsb sy", options(nostack));
+                    target.write_volatile(REQUEST[0]);
+                    core::arch::asm!("dsb sy", options(nostack));
+                }
+                let actual: [u32; 8] = core::array::from_fn(|i| unsafe { target.add(i).read_volatile() });
+                crate::logln!("[WQ3] request {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                    actual[0],actual[1],actual[2],actual[3],actual[4],actual[5],actual[6],actual[7]);
+                if actual != REQUEST { crate::logln!("[WQ3] failure=request-readback"); return; }
+                requested = true;
+            }
+            if requested && w[98] == 4 {
+                let valid = w[100] == 1 && w[103] == 1 && w[104..107] == [0,3,50] &&
+                    w[107] & 0xff00_0000 == 0x4000_0000 && w[108] & 0xff00_0000 == 0x4000_0000 &&
+                    (w[107]&LOAD) > (w[108]&LOAD) && (w[108]&LOAD) > LOAD-65536 &&
+                    w[109] & 0xff00_0000 == 0 && (256..=1000).contains(&w[110]) &&
+                    (1..=100_000).contains(&w[111]) && w[112..116] == [2,2,0,0] &&
+                    w[176..184] == REQUEST && w[145..176].iter().all(|x| *x == 0) &&
+                    w[184..256].iter().all(|x| *x == 0) && (w[70]|w[86]) == 0 &&
+                    (0..4).all(|i| w[128+i] > 0 && w[132+i] > w[128+i]);
+                if !valid { crate::logln!("[WQ3] failure=disabled-receipt"); return; }
+                for (row, words) in w.chunks_exact(4).enumerate() {
+                    crate::logln!("[WQ3] record {:03} {:08x} {:08x} {:08x} {:08x}",
+                        row*4,words[0],words[1],words[2],words[3]);
+                }
+                unsafe {
+                    for i in 1..8 { target.add(i).write_volatile(ACK[i]); }
+                    core::arch::asm!("dsb sy", options(nostack));
+                    target.write_volatile(ACK[0]);
+                    core::arch::asm!("dsb sy", options(nostack));
+                }
+                // Deliberately no target read here or any later RP1 operation.
+                crate::logln!("[WQ3] ack-issued {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                    ACK[0],ACK[1],ACK[2],ACK[3],ACK[4],ACK[5],ACK[6],ACK[7]);
+                crate::logln!("[WQ3] observer-quiesced no-more-rp1-access=1");
+                return;
+            }
+            crate::timer::delay_millis(50);
+        }
+        crate::logln!("[WQ3] failure=bounded-wait");
     }
 
     pub fn new(sram_base: usize, sram_size: usize) -> Self {
