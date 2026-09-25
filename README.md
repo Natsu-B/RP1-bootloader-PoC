@@ -1,5 +1,26 @@
 # RP1 Chainboot PoC
 
+## Opt-in sealed SCMI cold observer
+
+`rp1-scmi-cold-observer` preserves the 31 RTOS records and read-only completion.
+It only admits RP1 ELF SHA256
+`088048933674965bc5c3fc7be16b4e6196ec71a5f11712da6a8b34b54eb70e6e`, then reads
+the fixed 108-byte telemetry at `0x20009df0` with at most four seqlock attempts
+per sample. Equal even sequence values and the exact cold tuple are required.
+Known PLL_SYS/APB100 and UART50 register tuples are read twice before and after
+the samples; mismatch stops without completion. No added mailbox or MMIO writes.
+The feature is incompatible with watchdog requests, soak/mixed-repeat, skipped reload and
+continue-on-bootstrap-failure. Feature-off keeps the prior observer behavior.
+
+Build with `RP1_RTOS_READER_FEATURE=rp1-scmi-cold-observer bash tools/build-rtos-reader.sh /new/output`.
+Check emitted receipts with `python3 -B tools/check-scmi-cold.py UART10.log`;
+run negative checks with `python3 -B tools/check-scmi-cold.py --selftest`.
+Run the existing R1 and checked-readonly validators separately, including trace.
+This does not prove IRQ delivery, Linux SCMI completion, endpoint-reset survival,
+full clock-profile correctness, or external baud accuracy. Mask/pending fields
+are startup/ISR telemetry, not continuously sampled NVIC state. Deployment and
+independent held14 recovery remain separately admitted hardware operations.
+
 This repository contains an AArch64 EL2 bootloader PoC for Raspberry Pi 5 /
 BCM2712 / RP1 bringup.
 

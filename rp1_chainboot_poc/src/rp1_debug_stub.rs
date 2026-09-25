@@ -154,6 +154,14 @@ impl Rp1PcieTransport {
         compile_error!("Watchdog receipt uses bounded31-sample cadence, not soak");
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
         let mut watchdog_requested = false;
+        #[cfg(feature = "rp1-scmi-cold-observer")]
+        {
+            #[cfg(any(feature = "rp1-rtos-watchdog-receipt", feature = "rp1-rtos-soak", feature = "rp1-rtos-mixed-repeat",
+                feature = "skip-rp1-reload", feature = "continue-on-rp1-bootstrap-failure"))]
+            compile_error!("SCMI cold observer requires bounded read-only reload, no requests or soak");
+            crate::logln!("[SCMI] observer-begin address=20009df0 bytes=108 attempts=4 samples=31");
+            if !crate::log_rp1_clock_host_alias_snapshot(_rp1, "scmi-cold-before") { return; }
+        }
         // Opt-in mixed repetition needs a frozen tail after its ~32-minute workload.
         let samples = if cfg!(feature = "rp1-rtos-mixed-repeat") { 36u32 }
             else if cfg!(feature = "rp1-rtos-soak") { 34u32 } else { 31u32 };
@@ -191,12 +199,55 @@ impl Rp1PcieTransport {
                     sample, row * 4, words[0], words[1], words[2], words[3]);
             }
             crate::logln!("[RTOS] sample={} end", sample);
+            #[cfg(feature = "rp1-scmi-cold-observer")]
+            if !self.log_scmi_cold_sample(sample) { return; }
             crate::timer::delay_millis(if cfg!(feature = "rp1-rtos-soak") { 60_000 } else { 1000 });
         }
+        #[cfg(feature = "rp1-scmi-cold-observer")]
+        if !crate::log_rp1_clock_host_alias_snapshot(_rp1, "scmi-cold-after") { return; }
         #[cfg(not(feature = "rp1-rtos-watchdog-receipt"))]
         crate::logln!("[RTOS] observer-complete read-only=1");
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
         crate::logln!("[RTOS] observer-complete read-only=0 watchdog-request={}", u32::from(watchdog_requested));
+        #[cfg(feature = "rp1-scmi-cold-observer")]
+        crate::logln!("[SCMI] observer-complete cold-only=1");
+    }
+
+    #[cfg(feature = "rp1-scmi-cold-observer")]
+    fn log_scmi_cold_sample(&self, sample: u32) -> bool {
+        // Fixed ABI of sealed ELF 08804893...70e6e, checked before RP1 reload.
+        // Startup/ISR telemetry only: these are not live NVIC mask snapshots.
+        const EXPECTED: [u32; 27] = [0x3149_4353, 1, 2, 1,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0x2000_0000, 0x2000_01c1, 0x2000_d200, 0xc0, 1, 0, 0, 0];
+        let Ok(base) = self.translate_rp1_addr(0x2000_9df0, 108) else {
+            crate::logln!("[SCMI] failure=BAR2-range"); return false;
+        };
+        if base & 3 != 0 || base.checked_add(108).is_none() {
+            crate::logln!("[SCMI] failure=BAR2-alignment-overflow"); return false;
+        }
+        let ptr = base as *const u32;
+        for attempt in 1..=4 {
+            let before = unsafe { ptr.add(2).read_volatile() };
+            if before & 1 != 0 { continue; }
+            unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+            let words: [u32; 27] = core::array::from_fn(|i| unsafe { ptr.add(i).read_volatile() });
+            unsafe { core::arch::asm!("dsb sy", options(nostack, preserves_flags)); }
+            let after = unsafe { ptr.add(2).read_volatile() };
+            if before != after || words[2] != before { continue; }
+            crate::logln!("[SCMI] sample={} begin seq_before={:08x} seq_after={:08x} attempts={}",
+                sample, before, after, attempt);
+            for (row, w) in words.chunks_exact(3).enumerate() {
+                crate::logln!("[SCMI] {} {:03} {:08x} {:08x} {:08x}", sample, row * 3, w[0], w[1], w[2]);
+            }
+            crate::logln!("[SCMI] sample={} end", sample);
+            if words != EXPECTED {
+                crate::logln!("[SCMI] failure=cold-tuple sample={}", sample); return false;
+            }
+            return true;
+        }
+        crate::logln!("[SCMI] failure=bounded-seqlock sample={}", sample);
+        false
     }
 
     /// WDT3 instrumentation: record an already-disabled receipt, issue the

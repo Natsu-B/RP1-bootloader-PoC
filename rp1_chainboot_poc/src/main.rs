@@ -712,6 +712,11 @@ pub(crate) fn start_rp1_image_with_debug_sram(
     image: &rp1_image::Rp1Image<'_>,
     debug_sram: Option<(usize, usize)>,
 ) -> Result<(), BootError> {
+    #[cfg(feature = "rp1-scmi-cold-observer")]
+    if !matches!(image.source, rp1_image::Rp1ImageSource::Rp1Elf) {
+        logln!("[SCMI] failure=sealed-ELF-required");
+        return Err(BootError::Rp1ImageInvalid);
+    }
     let source = match image.source {
         rp1_image::Rp1ImageSource::Rp1Elf => "RP1.elf",
         rp1_image::Rp1ImageSource::Rp1Img => "RP1.img",
@@ -826,6 +831,7 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                                     );
                                 transport.log_probe("post-rp1-reload-reinit");
                                 transport.log_phase_readback("post-rp1-reload-reinit");
+                                #[cfg(not(feature = "rp1-scmi-cold-observer"))]
                                 log_rp1_clock_host_alias_snapshot(&rp1, "post-rp1-reload-reinit");
                                 log_rp1_reset_host_alias_snapshot(&rp1, "post-rp1-reload-reinit");
                                 #[cfg(feature = "rp1-rtos-record")]
@@ -1090,32 +1096,32 @@ fn log_rp1_pcie_config_dump(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'st
 }
 
 #[cfg(feature = "rp1-gdb-debug-stub")]
-fn log_rp1_clock_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'static str) {
+fn log_rp1_clock_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'static str) -> bool {
     const RP1_PERIPHERAL_BASE: u64 = 0x4000_0000;
     const PLL_SYS_BASE: u64 = 0x4002_0000;
     const CLK_UART_BASE: u64 = 0x4001_8054;
     const PLL_SYS_WINDOW_SIZE: u64 = 0x18;
-    const CLK_UART_WINDOW_SIZE: u64 = 0x08;
+    const CLK_UART_WINDOW_SIZE: u64 = if cfg!(feature = "rp1-scmi-cold-observer") { 0x10 } else { 0x08 };
 
     let Some((peripheral_base, peripheral_size)) = rp1.peripheral_addr else {
         logln!("[RP1CLKHOST] {} peripheral BAR missing", label);
-        return;
+        return false;
     };
     let Some(pll_offset) = PLL_SYS_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
         logln!("[RP1CLKHOST] {} invalid PLL_SYS offset", label);
-        return;
+        return false;
     };
     let Some(clk_uart_offset) = CLK_UART_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
         logln!("[RP1CLKHOST] {} invalid CLK_UART offset", label);
-        return;
+        return false;
     };
     let Some(pll_end) = pll_offset.checked_add(PLL_SYS_WINDOW_SIZE) else {
         logln!("[RP1CLKHOST] {} PLL_SYS offset overflow", label);
-        return;
+        return false;
     };
     let Some(clk_uart_end) = clk_uart_offset.checked_add(CLK_UART_WINDOW_SIZE) else {
         logln!("[RP1CLKHOST] {} CLK_UART offset overflow", label);
-        return;
+        return false;
     };
     if pll_end > peripheral_size || clk_uart_end > peripheral_size {
         logln!(
@@ -1124,23 +1130,30 @@ fn log_rp1_clock_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, la
             peripheral_base,
             peripheral_size
         );
-        return;
+        return false;
     }
     let Some(pll_cpu) = peripheral_base.checked_add(pll_offset) else {
         logln!("[RP1CLKHOST] {} PLL_SYS CPU alias overflow", label);
-        return;
+        return false;
     };
     let Some(clk_uart_cpu) = peripheral_base.checked_add(clk_uart_offset) else {
         logln!("[RP1CLKHOST] {} CLK_UART CPU alias overflow", label);
-        return;
+        return false;
     };
     let (Ok(pll_cpu), Ok(clk_uart_cpu)) = (usize::try_from(pll_cpu), usize::try_from(clk_uart_cpu))
     else {
         logln!("[RP1CLKHOST] {} clock CPU alias conversion failed", label);
-        return;
+        return false;
     };
 
+    #[cfg(feature = "rp1-scmi-cold-observer")]
+    if pll_cpu & 3 != 0 || clk_uart_cpu & 3 != 0 || pll_cpu.checked_add(0x18).is_none()
+        || clk_uart_cpu.checked_add(0x10).is_none() {
+        logln!("[SCMICLK] failure=alignment-overflow"); return false;
+    }
     unsafe {
+        #[cfg(feature = "rp1-scmi-cold-observer")]
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         let pll_sys_cs = core::ptr::read_volatile(pll_cpu as *const u32);
         let pll_sys_pwr = core::ptr::read_volatile((pll_cpu + 0x04) as *const u32);
         let pll_sys_fbdiv_int = core::ptr::read_volatile((pll_cpu + 0x08) as *const u32);
@@ -1149,6 +1162,24 @@ fn log_rp1_clock_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, la
         let pll_sys_sec = core::ptr::read_volatile((pll_cpu + 0x14) as *const u32);
         let clk_uart_ctrl = core::ptr::read_volatile(clk_uart_cpu as *const u32);
         let clk_uart_div_int = core::ptr::read_volatile((clk_uart_cpu + 0x04) as *const u32);
+        #[cfg(feature = "rp1-scmi-cold-observer")]
+        {
+            let clk_uart_sel = core::ptr::read_volatile((clk_uart_cpu + 0x0c) as *const u32);
+            let first = [pll_sys_cs, pll_sys_pwr, pll_sys_fbdiv_int, pll_sys_fbdiv_frac,
+                pll_sys_prim, clk_uart_ctrl, clk_uart_div_int, clk_uart_sel];
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            let addresses = [pll_cpu, pll_cpu + 4, pll_cpu + 8, pll_cpu + 12, pll_cpu + 16,
+                clk_uart_cpu, clk_uart_cpu + 4, clk_uart_cpu + 12];
+            let second: [u32; 8] = core::array::from_fn(|i| (addresses[i] as *const u32).read_volatile());
+            core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+            for (copy, w) in [first, second].iter().enumerate() {
+                logln!("[SCMICLK] {} read={} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                    label, copy, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+            }
+            if first != second || first != [0x8000_0001, 4, 20, 0, 0x51010, 0x1000_0840, 1, 1] {
+                logln!("[SCMICLK] failure=unstable-or-unknown-tuple"); return false;
+            }
+        }
         logln!(
             "[RP1CLKHOST] {} pll_cpu=0x{:x} PLL_SYS_CS={:08x} PLL_SYS_PWR={:08x} PLL_SYS_PRIM={:08x} bit4={}",
             label,
@@ -1173,6 +1204,7 @@ fn log_rp1_clock_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, la
             pll_sys_sec
         );
     }
+    true
 }
 
 #[cfg(feature = "rp1-gdb-debug-stub")]
@@ -1696,6 +1728,14 @@ pub(crate) fn log_rp1_elf_file_selection(
     elf_bytes: &[u8],
 ) -> Result<rp1_image::Rp1ElfInfo, BootError> {
     let file_digest = hash::sha256_bytes(elf_bytes);
+    #[cfg(feature = "rp1-scmi-cold-observer")]
+    if file_digest != [0x08, 0x80, 0x48, 0x93, 0x36, 0x74, 0x96, 0x5b,
+        0xc5, 0xc3, 0xfc, 0x7b, 0xe1, 0x6b, 0x4e, 0x61,
+        0x96, 0xec, 0x71, 0xa5, 0xf1, 0x17, 0x12, 0xda,
+        0x6a, 0x8b, 0x34, 0xb5, 0x4e, 0xb7, 0x0e, 0x6e] {
+        logln!("[SCMI] failure=sealed-ELF-hash actual={}", hash::Sha256Hex(&file_digest));
+        return Err(BootError::Rp1ImageInvalid);
+    }
     logln!("[RP1SRC] selected=ELF path={}", path);
     timer::delay_millis(2);
     logln!("[RP1ELF] len=0x{:x}", elf_bytes.len());
