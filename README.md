@@ -4,11 +4,15 @@
 
 `rp1-scmi-cold-observer` preserves the 31 RTOS records and read-only completion.
 It only admits RP1 ELF SHA256
-`088048933674965bc5c3fc7be16b4e6196ec71a5f11712da6a8b34b54eb70e6e`, then reads
-the fixed 108-byte telemetry at `0x20009df0` with at most four seqlock attempts
+`96adabc0c811f137d7260cf0fa13637c43edca48cd1166df2f68ab0a2db80dc8`, then reads
+the fixed 108-byte telemetry at `0x2000a648` with at most four seqlock attempts
 per sample. Equal even sequence values and the exact cold tuple are required.
 Known PLL_SYS/APB100 and UART50 register tuples are read twice before and after
-the samples; mismatch stops without completion. No added mailbox or MMIO writes.
+the samples; mismatch prevents completion. Startup waits at most100 attempts of
+50ms for SCMI-ready plus R1 stage/progress without fault. This is readiness polling,
+not IRQ proof. Admission failure still retains all31 R1/fault and SCMI snapshots
+for diagnosis; neither the success tuple nor final validator is relaxed.
+No added mailbox or MMIO writes.
 The feature is incompatible with watchdog requests, soak/mixed-repeat, skipped reload and
 continue-on-bootstrap-failure. Feature-off keeps the prior observer behavior.
 

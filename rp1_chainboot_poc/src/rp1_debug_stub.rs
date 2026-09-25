@@ -155,12 +155,17 @@ impl Rp1PcieTransport {
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
         let mut watchdog_requested = false;
         #[cfg(feature = "rp1-scmi-cold-observer")]
+        let mut scmi_admitted;
+        #[cfg(feature = "rp1-scmi-cold-observer")]
         {
             #[cfg(any(feature = "rp1-rtos-watchdog-receipt", feature = "rp1-rtos-soak", feature = "rp1-rtos-mixed-repeat",
                 feature = "skip-rp1-reload", feature = "continue-on-rp1-bootstrap-failure"))]
             compile_error!("SCMI cold observer requires bounded read-only reload, no requests or soak");
-            crate::logln!("[SCMI] observer-begin address=20009df0 bytes=108 attempts=4 samples=31");
-            if !crate::log_rp1_clock_host_alias_snapshot(_rp1, "scmi-cold-before") { return; }
+            crate::logln!("[SCMI] observer-begin address=2000a648 bytes=108 attempts=4 samples=31");
+            scmi_admitted = self.wait_scmi_cold_ready(base);
+            // Preserve the negative boot's RTOS/fault and SCMI records even when
+            // readiness or clocks fail. Completion remains strictly fail-closed.
+            scmi_admitted &= crate::log_rp1_clock_host_alias_snapshot(_rp1, "scmi-cold-before");
         }
         // Opt-in mixed repetition needs a frozen tail after its ~32-minute workload.
         let samples = if cfg!(feature = "rp1-rtos-mixed-repeat") { 36u32 }
@@ -200,11 +205,16 @@ impl Rp1PcieTransport {
             }
             crate::logln!("[RTOS] sample={} end", sample);
             #[cfg(feature = "rp1-scmi-cold-observer")]
-            if !self.log_scmi_cold_sample(sample) { return; }
+            { scmi_admitted &= self.log_scmi_cold_sample(sample); }
             crate::timer::delay_millis(if cfg!(feature = "rp1-rtos-soak") { 60_000 } else { 1000 });
         }
         #[cfg(feature = "rp1-scmi-cold-observer")]
-        if !crate::log_rp1_clock_host_alias_snapshot(_rp1, "scmi-cold-after") { return; }
+        {
+            scmi_admitted &= crate::log_rp1_clock_host_alias_snapshot(_rp1, "scmi-cold-after");
+            if !scmi_admitted {
+                crate::logln!("[SCMI] failure=cold-admission"); return;
+            }
+        }
         #[cfg(not(feature = "rp1-rtos-watchdog-receipt"))]
         crate::logln!("[RTOS] observer-complete read-only=1");
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
@@ -214,13 +224,44 @@ impl Rp1PcieTransport {
     }
 
     #[cfg(feature = "rp1-scmi-cold-observer")]
+    fn wait_scmi_cold_ready(&self, rtos_base: usize) -> bool {
+        let Ok(base) = self.translate_rp1_addr(0x2000_a648, 108) else { return false; };
+        if base & 3 != 0 { return false; }
+        let p = base as *const u32;
+        let r = rtos_base as *const u32;
+        // At most five seconds; this polls startup readiness, NOT mailbox delivery.
+        // Full telemetry and the unchanged R1 validator still decide acceptance.
+        for attempt in 1..=100 {
+            let ready = unsafe {
+                let seq = p.add(2).read_volatile();
+                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+                let ready = seq == 2 && p.read_volatile() == 0x3149_4353
+                    && p.add(1).read_volatile() == 1 && p.add(3).read_volatile() == 1
+                    && r.read_volatile() == 0x3130_5452 && r.add(1).read_volatile() == 1
+                    && (4..=5).contains(&r.add(2).read_volatile())
+                    && r.add(3).read_volatile() == 0 && r.add(4).read_volatile() == 0
+                    && r.add(8).read_volatile() > 0;
+                core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+                ready && p.add(2).read_volatile() == seq
+            };
+            if ready {
+                crate::logln!("[SCMIWAIT] ready=1 attempt={} limit=100 interval_ms=50", attempt);
+                return true;
+            }
+            crate::timer::delay_millis(50);
+        }
+        crate::logln!("[SCMIWAIT] ready=0 attempt=100 limit=100 interval_ms=50");
+        false
+    }
+
+    #[cfg(feature = "rp1-scmi-cold-observer")]
     fn log_scmi_cold_sample(&self, sample: u32) -> bool {
-        // Fixed ABI of sealed ELF 08804893...70e6e, checked before RP1 reload.
+        // Fixed ABI of sealed ELF 96adabc0...80dc8, checked before RP1 reload.
         // Startup/ISR telemetry only: these are not live NVIC mask snapshots.
         const EXPECTED: [u32; 27] = [0x3149_4353, 1, 2, 1,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0x2000_0000, 0x2000_01c1, 0x2000_d200, 0xc0, 1, 0, 0, 0];
-        let Ok(base) = self.translate_rp1_addr(0x2000_9df0, 108) else {
+            0x2000_0000, 0x2000_01c1, 0x2000_da40, 0xc0, 1, 0, 0, 0];
+        let Ok(base) = self.translate_rp1_addr(0x2000_a648, 108) else {
             crate::logln!("[SCMI] failure=BAR2-range"); return false;
         };
         if base & 3 != 0 || base.checked_add(108).is_none() {

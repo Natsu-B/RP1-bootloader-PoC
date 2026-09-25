@@ -5,10 +5,11 @@ from pathlib import Path
 import re
 import sys
 
-SEALED_SHA256 = '088048933674965bc5c3fc7be16b4e6196ec71a5f11712da6a8b34b54eb70e6e'
-COLD = [0x31494353, 1, 2, 1] + [0] * 15 + [0x20000000, 0x200001c1, 0x2000d200, 0xc0, 1] + [0] * 3
+SEALED_SHA256 = '96adabc0c811f137d7260cf0fa13637c43edca48cd1166df2f68ab0a2db80dc8'
+COLD = [0x31494353, 1, 2, 1] + [0] * 15 + [0x20000000, 0x200001c1, 0x2000da40, 0xc0, 1] + [0] * 3
 CLOCK = [0x80000001, 4, 20, 0, 0x51010, 0x10000840, 1, 1]
-BEGIN = '[SCMI] observer-begin address=20009df0 bytes=108 attempts=4 samples=31'
+BEGIN = '[SCMI] observer-begin address=2000a648 bytes=108 attempts=4 samples=31'
+WAIT = '[SCMIWAIT] ready=1 attempt=1 limit=100 interval_ms=50'
 END = '[SCMI] observer-complete cold-only=1'
 RTOS_END = '[RTOS] observer-complete read-only=1'
 
@@ -26,6 +27,11 @@ def check(text):
     assert text.count(RTOS_END) == 1, 'read-only completion'
     assert not any(x in text for x in ('[WDT2]', '[WQ3]', 'read-only=0')), 'write-enabled observer'
     receipts = list(re.finditer(r'\[(?:SCMI|SCMICLK)\][^\r\n]*', text))
+    waits = list(re.finditer(r'\[SCMIWAIT\][^\r\n]*', text))
+    assert len(waits) == 1 and len(receipts) >= 2, 'readiness receipt missing/duplicate'
+    wait = re.fullmatch(r'\[SCMIWAIT\] ready=1 attempt=(\d+) limit=100 interval_ms=50', waits[0][0])
+    assert wait and 1 <= int(wait[1]) <= 100, 'bounded startup readiness'
+    assert receipts[0].end() < waits[0].start() < waits[0].end() < receipts[1].start(), 'readiness chronology'
     expected = [BEGIN, clock_line('before', 0), clock_line('before', 1)]
     for sample in range(31):
         index = len(expected)
@@ -46,11 +52,12 @@ def check(text):
     return dict(result='SCMI_COLD_RECEIPTS_PASS', samples=31, seqlock_attempt_limit=4,
                 telemetry_bytes=108, apb_hz=100_000_000, uart_hz=50_000_000,
                 irq_delivery_proven=False, linux_transport_proven=False,
-                endpoint_reset_survival_proven=False, full_clock_profile_proven=False)
+                endpoint_reset_survival_proven=False, full_clock_profile_proven=False,
+                readiness_attempt=int(wait[1]), readiness_polling_not_irq_proof=True)
 
 
 def self_test():
-    lines = [f'[RP1ELF] file_sha256={SEALED_SHA256}', BEGIN,
+    lines = [f'[RP1ELF] file_sha256={SEALED_SHA256}', BEGIN, WAIT,
              clock_line('before', 0), clock_line('before', 1)]
     for sample in range(31):
         lines.extend([f'[RTOS] sample={sample} begin', f'[RTOS] sample={sample} end',
@@ -61,7 +68,12 @@ def self_test():
     good = '\n'.join(lines) + '\n'
     assert check(good)['samples'] == 31
     assert check(good.replace('attempts=1', 'attempts=4'))['samples'] == 31
+    assert check(good.replace(WAIT, WAIT.replace('attempt=1 ', 'attempt=100 ')))['samples'] == 31
     bad = [good + good, good.replace(SEALED_SHA256, '0' * 64),
+           good.replace(WAIT, WAIT.replace('ready=1', 'ready=0')),
+           good.replace(WAIT, WAIT.replace('attempt=1 ', 'attempt=0 ')),
+           good.replace(WAIT, WAIT.replace('attempt=1 ', 'attempt=101 ')),
+           good.replace(WAIT+'\n', '').replace(BEGIN, WAIT+'\n'+BEGIN),
            good.replace('seq_before=00000002', 'seq_before=00000003', 1),
            good.replace('seq_after=00000002', 'seq_after=00000004', 1),
            good.replace('attempts=1', 'attempts=5', 1),
@@ -94,7 +106,7 @@ def self_test():
             pass
         else:
             raise AssertionError('negative accepted')
-    return dict(result='PASS', positive=2, negative=len(bad))
+    return dict(result='PASS', positive=3, negative=len(bad))
 
 
 if __name__ == '__main__':
