@@ -12,8 +12,8 @@ def check(source, dependency):
     start = dependency.index('pub fn init_bcm2712_root_complex(')
     end = dependency.index('fn probe_bar_size(', start)
     init = dependency[start:end]
-    assert init.count('self.start_link(1_000)?;') == 1
-    wait = init.index('self.start_link(1_000)?;')
+    assert init.count('self.start_link(5_000)?;') == 1
+    wait = init.index('self.start_link(5_000)?;')
     assert wait < init.rindex('self.configure_root_bridge(cfg)?;') < init.index('self.verify_root_bridge_command()')
     assert dependency.count('self.start_link(') == 1
     for begin, end, stop in (
@@ -30,7 +30,7 @@ def check(source, dependency):
 check(main, brcm)
 negative = 0
 for bad_main, bad_brcm in (
-    (main, brcm.replace('self.start_link(1_000)?;', 'self.start_link(100)?;')),
+    (main, brcm.replace('self.start_link(5_000)?;', 'self.start_link(100)?;')),
     (main.replace('fatal=incomplete-link-init retry=forbidden', 'missing', 1), brcm),
     (main.replace('[RP1STOCKSPI] fatal=incomplete-link-init retry=forbidden', 'missing'), brcm),
     (main.replace('return Err(BootError::Rp1Pcie);', 'break;'), brcm),
