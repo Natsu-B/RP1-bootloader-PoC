@@ -5,10 +5,10 @@ from pathlib import Path
 import re
 import sys
 
-SEALED_SHA256 = '22bdb366a9fa4a0f1b2621b4f04e506c82091b72317672f8735c6d9a3e8497d6'
-COLD = [0x31494353, 1, 2, 1] + [0] * 15 + [0x20000000, 0x200001c1, 0x2000d7c0, 0xc0, 1] + [0] * 3
+SEALED_SHA256 = '93a159794bed9724590b364927aa3c91989ce354576088aab9f490db9ef52ae8'
+COLD = [0x31494353, 1, 2, 1] + [0] * 15 + [0x20000000, 0x200001c1, 0x2000d8c0, 0xc0, 1] + [0] * 3
 CLOCK = [0x80000001, 4, 20, 0, 0x51010, 0x10000840, 1, 1]
-BEGIN = '[SCMI] observer-begin address=2000a278 bytes=108 attempts=4 samples=31'
+BEGIN = '[SCMI] observer-begin address=2000a368 bytes=108 attempts=4 samples=31'
 WAIT = '[SCMIWAIT] ready=1 attempt=1 limit=100 interval_ms=50'
 END = '[SCMI] observer-complete cold-only=1'
 RTOS_END = '[RTOS] observer-complete read-only=1'
