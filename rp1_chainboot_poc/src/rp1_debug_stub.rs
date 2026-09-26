@@ -163,7 +163,7 @@ impl Rp1PcieTransport {
             #[cfg(any(feature = "rp1-rtos-watchdog-receipt", feature = "rp1-rtos-soak", feature = "rp1-rtos-mixed-repeat",
                 feature = "skip-rp1-reload", feature = "continue-on-rp1-bootstrap-failure"))]
             compile_error!("SCMI cold observer requires bounded read-only reload, no requests or soak");
-            crate::logln!("[SCMI] observer-begin address=2000a648 bytes=108 attempts=4 samples=31");
+            crate::logln!("[SCMI] observer-begin address=2000a278 bytes=108 attempts=4 samples=31");
             scmi_admitted = self.wait_scmi_cold_ready(base);
             // Preserve the negative boot's RTOS/fault and SCMI records even when
             // readiness or clocks fail. Completion remains strictly fail-closed.
@@ -235,7 +235,7 @@ impl Rp1PcieTransport {
 
     #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     fn wait_scmi_cold_ready(&self, rtos_base: usize) -> bool {
-        let Ok(base) = self.translate_rp1_addr(0x2000_a648, 108) else { return false; };
+        let Ok(base) = self.translate_rp1_addr(0x2000_a278, 108) else { return false; };
         if base & 3 != 0 { return false; }
         let p = base as *const u32;
         let r = rtos_base as *const u32;
@@ -266,12 +266,12 @@ impl Rp1PcieTransport {
 
     #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     fn log_scmi_cold_sample(&self, sample: u32) -> bool {
-        // Fixed ABI of sealed ELF 96adabc0...80dc8, checked before RP1 reload.
+        // Fixed ABI of sealed ELF22bdb366...e8497d6, checked before RP1 reload.
         // Startup/ISR telemetry only: these are not live NVIC mask snapshots.
         const EXPECTED: [u32; 27] = [0x3149_4353, 1, 2, 1,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0x2000_0000, 0x2000_01c1, 0x2000_da40, 0xc0, 1, 0, 0, 0];
-        let Ok(base) = self.translate_rp1_addr(0x2000_a648, 108) else {
+            0x2000_0000, 0x2000_01c1, 0x2000_d7c0, 0xc0, 1, 0, 0, 0];
+        let Ok(base) = self.translate_rp1_addr(0x2000_a278, 108) else {
             crate::logln!("[SCMI] failure=BAR2-range"); return false;
         };
         if base & 3 != 0 || base.checked_add(108).is_none() {
