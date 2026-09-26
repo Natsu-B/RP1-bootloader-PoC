@@ -4,8 +4,8 @@
 
 `rp1-scmi-linux-preloaded` is independent of the bare-metal observer (which still
 halts). Build with `RP1_RTOS_READER_FEATURE=rp1-scmi-linux-preloaded bash
-tools/build-rtos-reader.sh /new/output`. Only log-uart, require-rp1-img and its
-read-only/TFTP prerequisites may be combined with it; all other features,
+tools/build-rtos-reader.sh /new/output`. Only log-uart, require-rp1-img, the optional
+rp1-time-anchor and its read-only/TFTP prerequisites may be combined with it; all other features,
 including defaults, observer, failure continuation and skip-reload are rejected.
 
 It downloads `linux_2712.img`, nonempty `initramfs_2712` and `scmi_linux.dtb`
@@ -26,6 +26,34 @@ Run the unchanged cold/R1/read-only/trace validators separately. This mode is
 transport-only commissioning, NOT final coexistence admission: independently
 validate the effective handoff DT and RAM-only init, then prove standard PCIe
 survival and same-boot M3/host response IRQs. No hardware proof follows from a build.
+
+## Opt-in read-only host/RP1 time anchor
+
+`RP1_RTOS_READER_FEATURE=rp1-time-anchor bash tools/build-rtos-reader.sh /new/output`
+adds only timestamp reads to the admitted `rp1-scmi-linux-preloaded` path. The
+feature is off by default. The existing post-reload `Rp1Config` supplies a checked
+BAR1 range for RawTimer high/low (`0xac024`/`0xac028`); no new PCIe/GEM init or
+RP1 MMIO write is added. Each H/L/H observation retries at most four times.
+Completion barriers and ordered physical `CNTPCT_EL0` reads enclose each sample.
+All 16 samples are captured before `[RP1ANCHOR]` output; no delay is inserted.
+
+The version-1 header identifies the counter, count, assumed 1 MHz RawTimer tick
+and retry limit. Each sample logs its host-before/after interval, `CNTFRQ_EL0`,
+before/after `CNTVOFF_EL2`, all three timer words, attempts and `valid`/`error`.
+`raw64` is the high-before/low concatenation and is usable only with `valid=1`;
+mapping failure explicitly reports zero attempts and invalid placeholder words.
+Missing/invalid samples invalidate the anchor dataset, not the existing cold
+admission gate: this observational feature does not silently substitute another
+clock or change Linux handoff behavior. CPU access faults/nonresponding buses
+cannot be recovered by the finite rollover retry loop.
+
+Linux handoff clears CNTVOFF, so pre-handoff virtual counts are not directly
+comparable; this anchor deliberately uses physical counts and records the offset.
+It does not prove an exact electrical edge, first downstream scan, stable future
+drift, or writer admission. Preserve intervals and 1 us timer quantization; do not
+replace them with exact midpoint timestamps. Run the existing
+`python3 -B tools/test-scmi-linux-preloaded.py` for anchor rollover/error checks
+as well as the sealed preloaded admission checks.
 
 ## Opt-in sealed SCMI cold observer
 

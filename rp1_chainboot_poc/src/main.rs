@@ -845,7 +845,7 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                                             logln!("[SCMILINUX] failure=cold-admission");
                                             return Err(BootError::Rp1ImageInvalid);
                                         }
-                                        logln!("[SCMILINUX] admitted preload-only=1 read-only=1");
+                                        logln!("[SCMILINUX] admitted preload-only=1 read-only=1"); #[cfg(feature = "rp1-time-anchor")] rp1_time_anchor::log(&rp1);
                                         return Ok(());
                                     }
                                     #[cfg(not(feature = "rp1-scmi-linux-preloaded"))]
@@ -2301,3 +2301,7 @@ compile_error!("I2C STOP final reader requires the isolated final ABI and replac
     )
 ))]
 compile_error!("I2C read1 final reader requires the isolated final ABI and replacement-firmware reload without debugger diagnostics");
+
+// Keep feature-off panic-source line numbers and raw images unchanged.
+#[cfg(feature = "rp1-time-anchor")]
+mod rp1_time_anchor;

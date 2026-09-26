@@ -11,8 +11,9 @@ feature = 'rp1-scmi-linux-preloaded'
 manifest = tomllib.loads((repo / 'rp1_chainboot_poc/Cargo.toml').read_text())
 features = manifest['features']
 allowed = {feature, 'rp1-rtos-record', 'rp1-gdb-debug-stub', 'tftp-boot',
-           'tftp-initramfs', 'require-rp1-img', 'log-uart'}
+           'tftp-initramfs', 'require-rp1-img', 'log-uart', 'rp1-time-anchor'}
 assert features[feature] == ['rp1-rtos-record', 'tftp-initramfs']
+assert features['rp1-time-anchor'] == [feature]
 env = {k: v for k, v in os.environ.items() if not k.startswith('CARGO_FEATURE_')}
 env.update({'CARGO_FEATURE_' + f.upper().replace('-', '_'): '1' for f in allowed})
 with tempfile.TemporaryDirectory(prefix='scmi-linux-test-') as scratch:
@@ -25,6 +26,9 @@ with tempfile.TemporaryDirectory(prefix='scmi-linux-test-') as scratch:
         assert result.returncode != 0 and 'incompatible feature:' in result.stderr, forbidden
     tests = Path(scratch) / 'r1-tests'
     subprocess.run(['rustc', '--edition=2024', '--test', repo / 'rp1_chainboot_poc/src/scmi_linux_admission.rs', '-o', tests], check=True)
+    subprocess.run([tests], check=True)
+    tests = Path(scratch) / 'anchor-tests'
+    subprocess.run(['rustc', '--edition=2024', '--test', repo / 'rp1_chainboot_poc/src/rp1_time_anchor.rs', '-o', tests], check=True)
     subprocess.run([tests], check=True)
 net = (repo / 'rp1_chainboot_poc/src/net_boot.rs').read_text()
 preload = net[net.index('if cfg!(any(feature = "rp1-linux-observe-failure"'):net.index('    if skip_rp1_reload {')]
@@ -43,6 +47,8 @@ admission = main[main.index('let admitted = transport.log_rtos_samples'):main.in
 assert 'if !admitted' in admission and 'return Err(BootError::Rp1ImageInvalid)' in admission
 assert '#[cfg(not(feature = "rp1-scmi-linux-preloaded"))]\n                                    halt();' in admission
 assert admission.index('if !admitted') < admission.index('return Ok(())')
+assert admission.index('if !admitted') < admission.index('rp1_time_anchor::log(&rp1)') < admission.index('return Ok(())')
+assert '#[cfg(feature = "rp1-time-anchor")] rp1_time_anchor::log(&rp1)' in admission
 fallback = main[main.index('failure=post-cold-observer-not-reached'):main.index('let Some((sram_base, sram_size)) = debug_sram else')]
 assert 'return Err(BootError::Rp1Pcie)' in fallback
 print(f'PASS: R1 predicates, preload order, observer halt; {len(features.keys() - allowed)} incompatible features rejected')

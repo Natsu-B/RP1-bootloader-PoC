@@ -5,7 +5,7 @@ fn main() {
             if let Some(feature) = key.strip_prefix("CARGO_FEATURE_") {
                 assert!(matches!(feature, "RP1_SCMI_LINUX_PRELOADED" | "RP1_RTOS_RECORD"
                     | "RP1_GDB_DEBUG_STUB" | "TFTP_BOOT" | "TFTP_INITRAMFS"
-                    | "REQUIRE_RP1_IMG" | "LOG_UART"),
+                    | "REQUIRE_RP1_IMG" | "LOG_UART" | "RP1_TIME_ANCHOR"),
                     "rp1-scmi-linux-preloaded incompatible feature: {feature}");
             }
         }
