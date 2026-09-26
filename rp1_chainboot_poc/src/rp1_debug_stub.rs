@@ -141,22 +141,24 @@ impl Rp1PcieTransport {
     /// Default read-only proc0 RTOS observer. Explicit watchdog feature adds
     /// one fixed SRAM request; no host clock write, Linux change or generic RPC.
     #[cfg(feature = "rp1-rtos-record")]
-    pub fn log_rtos_samples(&mut self, _rp1: &arch_hal::soc::bcm2712::Rp1Config) {
+    pub fn log_rtos_samples(&mut self, _rp1: &arch_hal::soc::bcm2712::Rp1Config) -> bool {
         #[cfg(feature = "rp1-rtos-watchdog-quiescence")]
-        { self.log_watchdog_quiescence(_rp1); return; }
+        { self.log_watchdog_quiescence(_rp1); return false; }
         let mut snapshot = [0u32; 256];
         let Ok(base) = self.translate_rp1_addr(0x2000_f800, 1024) else {
             crate::logln!("[RTOS] invalid BAR2 range");
-            return;
+            return false;
         };
-        if base & 3 != 0 { return; }
+        if base & 3 != 0 { return false; }
         #[cfg(all(feature = "rp1-rtos-watchdog-receipt", feature = "rp1-rtos-soak"))]
         compile_error!("Watchdog receipt uses bounded31-sample cadence, not soak");
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
         let mut watchdog_requested = false;
-        #[cfg(feature = "rp1-scmi-cold-observer")]
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        let mut r1_admission = crate::scmi_linux_admission::R1Admission::new();
+        #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
         let mut scmi_admitted;
-        #[cfg(feature = "rp1-scmi-cold-observer")]
+        #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
         {
             #[cfg(any(feature = "rp1-rtos-watchdog-receipt", feature = "rp1-rtos-soak", feature = "rp1-rtos-mixed-repeat",
                 feature = "skip-rp1-reload", feature = "continue-on-rp1-bootstrap-failure"))]
@@ -196,7 +198,7 @@ impl Rp1PcieTransport {
                 let actual: [u32; 8] = core::array::from_fn(|i| unsafe { target.add(i).read_volatile() });
                 crate::logln!("[WDT2] request {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
                     actual[0], actual[1], actual[2], actual[3], actual[4], actual[5], actual[6], actual[7]);
-                if actual != request { crate::logln!("[WDT2] request readback failed"); return; }
+                if actual != request { crate::logln!("[WDT2] request readback failed"); return false; }
             }
             crate::logln!("[RTOS] sample={} begin", sample);
             for (row, words) in snapshot.chunks_exact(4).enumerate() {
@@ -204,26 +206,34 @@ impl Rp1PcieTransport {
                     sample, row * 4, words[0], words[1], words[2], words[3]);
             }
             crate::logln!("[RTOS] sample={} end", sample);
-            #[cfg(feature = "rp1-scmi-cold-observer")]
+            #[cfg(feature = "rp1-scmi-linux-preloaded")]
+            if !r1_admission.sample(sample, &snapshot) {
+                crate::logln!("[SCMILINUX] failure=R1-sample sample={}", sample);
+                scmi_admitted = false;
+            }
+            #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
             { scmi_admitted &= self.log_scmi_cold_sample(sample); }
             crate::timer::delay_millis(if cfg!(feature = "rp1-rtos-soak") { 60_000 } else { 1000 });
         }
-        #[cfg(feature = "rp1-scmi-cold-observer")]
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        { scmi_admitted &= r1_admission.complete(); }
+        #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
         {
             scmi_admitted &= crate::log_rp1_clock_host_alias_snapshot(_rp1, "scmi-cold-after");
             if !scmi_admitted {
-                crate::logln!("[SCMI] failure=cold-admission"); return;
+                crate::logln!("[SCMI] failure=cold-admission"); return false;
             }
         }
         #[cfg(not(feature = "rp1-rtos-watchdog-receipt"))]
         crate::logln!("[RTOS] observer-complete read-only=1");
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
         crate::logln!("[RTOS] observer-complete read-only=0 watchdog-request={}", u32::from(watchdog_requested));
-        #[cfg(feature = "rp1-scmi-cold-observer")]
+        #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
         crate::logln!("[SCMI] observer-complete cold-only=1");
+        true
     }
 
-    #[cfg(feature = "rp1-scmi-cold-observer")]
+    #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     fn wait_scmi_cold_ready(&self, rtos_base: usize) -> bool {
         let Ok(base) = self.translate_rp1_addr(0x2000_a648, 108) else { return false; };
         if base & 3 != 0 { return false; }
@@ -254,7 +264,7 @@ impl Rp1PcieTransport {
         false
     }
 
-    #[cfg(feature = "rp1-scmi-cold-observer")]
+    #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     fn log_scmi_cold_sample(&self, sample: u32) -> bool {
         // Fixed ABI of sealed ELF 96adabc0...80dc8, checked before RP1 reload.
         // Startup/ISR telemetry only: these are not live NVIC mask snapshots.

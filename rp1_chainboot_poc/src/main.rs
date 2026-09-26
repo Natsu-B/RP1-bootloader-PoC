@@ -79,6 +79,8 @@ mod rp1_image;
 #[cfg(feature = "rp1-inbound-monitor-block-proof")]
 mod rp1_inbound_monitor;
 mod rp1_note;
+#[cfg(feature = "rp1-scmi-linux-preloaded")]
+mod scmi_linux_admission;
 
 const RP1_ELF_PATHS: &[&str] = &["/RP1.elf", "/rp1/RP1.elf", "/rp1/rp1.elf", "/RP1/RP1.ELF"];
 
@@ -712,7 +714,7 @@ pub(crate) fn start_rp1_image_with_debug_sram(
     image: &rp1_image::Rp1Image<'_>,
     debug_sram: Option<(usize, usize)>,
 ) -> Result<(), BootError> {
-    #[cfg(feature = "rp1-scmi-cold-observer")]
+    #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     if !matches!(image.source, rp1_image::Rp1ImageSource::Rp1Elf) {
         logln!("[SCMI] failure=sealed-ELF-required");
         return Err(BootError::Rp1ImageInvalid);
@@ -831,12 +833,24 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                                     );
                                 transport.log_probe("post-rp1-reload-reinit");
                                 transport.log_phase_readback("post-rp1-reload-reinit");
-                                #[cfg(not(feature = "rp1-scmi-cold-observer"))]
+                                #[cfg(not(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded")))]
                                 log_rp1_clock_host_alias_snapshot(&rp1, "post-rp1-reload-reinit");
                                 log_rp1_reset_host_alias_snapshot(&rp1, "post-rp1-reload-reinit");
                                 #[cfg(feature = "rp1-rtos-record")]
                                 {
-                                    transport.log_rtos_samples(&rp1);
+                                    let admitted = transport.log_rtos_samples(&rp1);
+                                    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+                                    {
+                                        if !admitted {
+                                            logln!("[SCMILINUX] failure=cold-admission");
+                                            return Err(BootError::Rp1ImageInvalid);
+                                        }
+                                        logln!("[SCMILINUX] admitted preload-only=1 read-only=1");
+                                        return Ok(());
+                                    }
+                                    #[cfg(not(feature = "rp1-scmi-linux-preloaded"))]
+                                    let _ = admitted;
+                                    #[cfg(not(feature = "rp1-scmi-linux-preloaded"))]
                                     halt();
                                 }
                                 crate::timer::delay_millis(500);
@@ -913,6 +927,13 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                     );
                 }
             }
+        }
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        {
+            // A pre-reset BAR is not post-cold admission. Never enter the GDB
+            // command loop when the bounded post-reset observer was not reached.
+            logln!("[SCMILINUX] failure=post-cold-observer-not-reached");
+            return Err(BootError::Rp1Pcie);
         }
         let Some((sram_base, sram_size)) = debug_sram else {
             logln!("[RP1GDB] shared SRAM BAR unavailable");
@@ -1101,7 +1122,7 @@ fn log_rp1_clock_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, la
     const PLL_SYS_BASE: u64 = 0x4002_0000;
     const CLK_UART_BASE: u64 = 0x4001_8054;
     const PLL_SYS_WINDOW_SIZE: u64 = 0x18;
-    const CLK_UART_WINDOW_SIZE: u64 = if cfg!(feature = "rp1-scmi-cold-observer") { 0x10 } else { 0x08 };
+    const CLK_UART_WINDOW_SIZE: u64 = if cfg!(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded")) { 0x10 } else { 0x08 };
 
     let Some((peripheral_base, peripheral_size)) = rp1.peripheral_addr else {
         logln!("[RP1CLKHOST] {} peripheral BAR missing", label);
@@ -1146,13 +1167,13 @@ fn log_rp1_clock_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, la
         return false;
     };
 
-    #[cfg(feature = "rp1-scmi-cold-observer")]
+    #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     if pll_cpu & 3 != 0 || clk_uart_cpu & 3 != 0 || pll_cpu.checked_add(0x18).is_none()
         || clk_uart_cpu.checked_add(0x10).is_none() {
         logln!("[SCMICLK] failure=alignment-overflow"); return false;
     }
     unsafe {
-        #[cfg(feature = "rp1-scmi-cold-observer")]
+        #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
         core::arch::asm!("dsb sy", options(nostack, preserves_flags));
         let pll_sys_cs = core::ptr::read_volatile(pll_cpu as *const u32);
         let pll_sys_pwr = core::ptr::read_volatile((pll_cpu + 0x04) as *const u32);
@@ -1162,7 +1183,7 @@ fn log_rp1_clock_host_alias_snapshot(rp1: &arch_hal::soc::bcm2712::Rp1Config, la
         let pll_sys_sec = core::ptr::read_volatile((pll_cpu + 0x14) as *const u32);
         let clk_uart_ctrl = core::ptr::read_volatile(clk_uart_cpu as *const u32);
         let clk_uart_div_int = core::ptr::read_volatile((clk_uart_cpu + 0x04) as *const u32);
-        #[cfg(feature = "rp1-scmi-cold-observer")]
+        #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
         {
             let clk_uart_sel = core::ptr::read_volatile((clk_uart_cpu + 0x0c) as *const u32);
             let first = [pll_sys_cs, pll_sys_pwr, pll_sys_fbdiv_int, pll_sys_fbdiv_frac,
@@ -1728,7 +1749,7 @@ pub(crate) fn log_rp1_elf_file_selection(
     elf_bytes: &[u8],
 ) -> Result<rp1_image::Rp1ElfInfo, BootError> {
     let file_digest = hash::sha256_bytes(elf_bytes);
-    #[cfg(feature = "rp1-scmi-cold-observer")]
+    #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     if file_digest != [0x96, 0xad, 0xab, 0xc0, 0xc8, 0x11, 0xf1, 0x37,
         0xd7, 0x26, 0x0c, 0xf0, 0xfa, 0x13, 0x63, 0x7c,
         0x43, 0xed, 0xca, 0x48, 0xcd, 0x11, 0x66, 0xdf,

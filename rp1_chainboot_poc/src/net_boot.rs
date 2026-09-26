@@ -19,9 +19,9 @@ use crate::placement;
 use crate::rp1_dtb_policy::Rp1DtbPolicy;
 
 const TFTP_LOCAL_MAC: MacAddr = MacAddr([0x2c, 0xcf, 0x67, 0xc2, 0x9a, 0x58]);
-#[cfg(feature = "rp1-linux-observe-failure")]
+#[cfg(any(feature = "rp1-linux-observe-failure", feature = "rp1-scmi-linux-preloaded"))]
 const TFTP_KERNEL_FILENAME: &str = "linux_2712.img";
-#[cfg(not(feature = "rp1-linux-observe-failure"))]
+#[cfg(not(any(feature = "rp1-linux-observe-failure", feature = "rp1-scmi-linux-preloaded")))]
 const TFTP_KERNEL_FILENAME: &str = "BCM2712.img";
 const TFTP_RP1_ELF_FILENAME: &str = "RP1.elf";
 const TFTP_RP1_CONFIG_FILENAME: &str = "config_rp1.txt";
@@ -86,7 +86,7 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
     let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
     let mut ports = TftpSessionPorts::new();
 
-    if cfg!(feature = "rp1-linux-observe-failure") && !skip_rp1_reload {
+    if cfg!(any(feature = "rp1-linux-observe-failure", feature = "rp1-scmi-linux-preloaded")) && !skip_rp1_reload {
         let gem = init_tftp_gem(dtb)?;
         let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
             crate::logln!("[DHCP] failed: {:?}", err);
@@ -98,6 +98,11 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
         let initramfs_len = download_initramfs(&mut *gem, &clock, &lease, &mut ports)?;
         #[cfg(not(feature = "tftp-initramfs"))]
         let initramfs_len = 0;
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        if initramfs_len == 0 {
+            crate::logln!("[SCMILINUX] failure=empty-initramfs");
+            return Err(BootError::Rp1ImageInvalid);
+        }
         let initrd_start = if initramfs_len == 0 {
             0
         } else {
@@ -106,10 +111,37 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
         let initrd_end = initrd_start
             .checked_add(initramfs_len)
             .ok_or(BootError::AddressOverflow)?;
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        let linux_dtb_bytes = download_tftp_required(
+            &mut *gem, &clock, &lease, "scmi_linux.dtb", placement::DTB_MAX_SIZE, &mut ports,
+        )?;
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        let mut linux_dtb_storage = vec![0u64; linux_dtb_bytes.len().div_ceil(8)];
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        let linux_dtb = {
+            let digest = crate::hash::sha256_bytes(&linux_dtb_bytes);
+            crate::hash::log_sha256_len("linux.input.dtb", &digest, linux_dtb_bytes.len());
+            let address = linux_dtb_storage.as_mut_ptr() as usize;
+            if digest != crate::scmi_linux_admission::LINUX_DTB_SHA256
+                || !crate::scmi_linux_admission::dtb_envelope_valid(&linux_dtb_bytes, address) {
+                crate::logln!("[SCMILINUX] failure=sealed-linux-dtb");
+                return Err(BootError::DtbPatch);
+            }
+            // Vec<u8> downloads need not be aligned; the u64 backing is. Its
+            // allocated byte length is rounded up and both Vecs outlive handoff.
+            unsafe { core::ptr::copy_nonoverlapping(linux_dtb_bytes.as_ptr(), address as *mut u8, linux_dtb_bytes.len()); }
+            dtb::DtbParser::init(address).map_err(|_| BootError::DtbPatch)?
+        };
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        let handoff_dtb = &linux_dtb;
+        #[cfg(not(feature = "rp1-scmi-linux-preloaded"))]
+        let handoff_dtb = dtb;
+        // The firmware tree remains authoritative for transport/bootstrap. The
+        // downloaded Vec stays alive through the terminal handoff below.
         let rp1_policy =
             download_rp1_policy_and_reload_if_needed(dtb, &mut *gem, &clock, &lease, &mut ports)?;
         return handoff_preloaded_kernel(
-            dtb,
+            handoff_dtb,
             kernel_base,
             image,
             initrd_start,
@@ -258,6 +290,8 @@ fn download_kernel_image_from_tftp(
         Ok(len) => len,
         Err(err) => return gem_failure(gem, lease, "kernel download", err),
     };
+    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+    crate::hash::log_sha256_len("linux.download.file", &crate::hash::sha256_bytes(&kernel_staging[..kernel_len]), kernel_len);
     crate::logln!(
         "[TFTP] kernel download complete addr=0x{:x} len={}",
         placement::KERNEL_LOAD_BASE,
@@ -270,6 +304,11 @@ fn download_kernel_image_from_tftp(
     )?;
     drop(kernel_staging);
     let image = linux::validate_arm64_image(kernel.base, kernel.len, placement::KERNEL_MAX_SIZE)?;
+    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+    {
+        let bytes = unsafe { core::slice::from_raw_parts(kernel.base as *const u8, kernel.len) };
+        crate::hash::log_sha256_len("linux.preloaded.image", &crate::hash::sha256_bytes(bytes), bytes.len());
+    }
     Ok((kernel.base, image))
 }
 
@@ -281,7 +320,7 @@ fn handoff_preloaded_kernel(
     initrd_end: usize,
     rp1_policy: Option<Rp1DtbPolicy>,
 ) -> Result<(), BootError> {
-    crate::logln!("[TFTP] using preloaded Linux kernel for observe handoff");
+    crate::logln!("[TFTP] using preloaded Linux kernel for handoff");
     handoff_kernel_common(dtb, &image, initrd_start, initrd_end, rp1_policy.as_ref())?;
     linux::clean_dcache_poc(kernel_base, image.image_size);
     linux::clean_dcache_poc(initrd_start, initrd_end - initrd_start);
@@ -330,6 +369,12 @@ fn handoff_kernel_common(
     linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
     if patched_dtb.addr != placement::DTB_COPY_BASE {
         return Err(BootError::AddressOverflow);
+    }
+    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+    {
+        // The exact serialized handoff tree, including firmware and owner edits.
+        let bytes = unsafe { core::slice::from_raw_parts(patched_dtb.addr as *const u8, patched_dtb.len) };
+        crate::hash::log_sha256_len("linux.handoff.dtb", &crate::hash::sha256_bytes(bytes), bytes.len());
     }
     Ok(())
 }
@@ -625,6 +670,11 @@ fn download_initramfs(
         placement::INITRAMFS_LOAD_BASE,
         len
     );
+    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+    {
+        let bytes = unsafe { core::slice::from_raw_parts(placement::INITRAMFS_LOAD_BASE as *const u8, len) };
+        crate::hash::log_sha256_len("linux.preloaded.initramfs", &crate::hash::sha256_bytes(bytes), len);
+    }
     Ok(len)
 }
 

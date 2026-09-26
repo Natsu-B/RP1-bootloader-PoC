@@ -1,5 +1,32 @@
 # RP1 Chainboot PoC
 
+## Opt-in preloaded standard-Linux SCMI commissioning
+
+`rp1-scmi-linux-preloaded` is independent of the bare-metal observer (which still
+halts). Build with `RP1_RTOS_READER_FEATURE=rp1-scmi-linux-preloaded bash
+tools/build-rtos-reader.sh /new/output`. Only log-uart, require-rp1-img and its
+read-only/TFTP prerequisites may be combined with it; all other features,
+including defaults, observer, failure continuation and skip-reload are rejected.
+
+It downloads `linux_2712.img`, nonempty `initramfs_2712` and `scmi_linux.dtb`
+before cold reload, then releases GEM and uses the same sealed ELF, readiness, clock and SCMI cold
+checks below. R1 record/progress/tick predicates from the unchanged HAL runtime
+validator are additionally required before returning to the preloaded Linux
+handoff. Failure cannot continue to Linux; no state-5 replay or post-cold GEM
+initialization is added. The firmware DT remains in use for transport/bootstrap;
+only Linux receives the downloaded DT, sealed to
+`317d8bdd84592ea6355c330fa2afd470c6edd6ab25bf15fc644f6d1a7e483ef7` with checked
+alignment/header/exact length. The input/output DT and kernel/initrd SHA256+length
+are logged for the separately sealed deployment bundle. Actual patched DT uses
+the `linux.handoff.dtb` receipt. No firmware DT/config replacement is needed.
+
+Run `python3 -B tools/test-scmi-linux-preloaded.py`; optionally set `SCMI_R1_LOGS`
+to colon-separated retained UART logs for the actual R1 predicate check.
+Run the unchanged cold/R1/read-only/trace validators separately. This mode is
+transport-only commissioning, NOT final coexistence admission: independently
+validate the effective handoff DT and RAM-only init, then prove standard PCIe
+survival and same-boot M3/host response IRQs. No hardware proof follows from a build.
+
 ## Opt-in sealed SCMI cold observer
 
 `rp1-scmi-cold-observer` preserves the 31 RTOS records and read-only completion.
