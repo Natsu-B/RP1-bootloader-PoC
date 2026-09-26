@@ -31,6 +31,9 @@ preload = net[net.index('if cfg!(any(feature = "rp1-linux-observe-failure"'):net
 assert preload.index('download_kernel_image_from_tftp') < preload.index('download_initramfs') < preload.index('download_rp1_policy_and_reload_if_needed') < preload.index('return handoff_preloaded_kernel')
 assert 'initramfs_len == 0' in preload and preload.count('init_tftp_gem(') == 1
 assert preload.index('"scmi_linux.dtb"') < preload.index('download_rp1_policy_and_reload_if_needed')
+assert preload.index('console_clock_hz(dtb)?') < preload.index('download_rp1_policy_and_reload_if_needed')
+assert 'console_clock_matches(firmware_hz, linux_hz, ibrd, fbrd)' in preload
+assert 'failure=uart10-clock-contract' in preload
 assert 'digest != crate::scmi_linux_admission::LINUX_DTB_SHA256' in preload
 assert 'download_rp1_policy_and_reload_if_needed(dtb,' in preload
 assert 'return handoff_preloaded_kernel(\n            handoff_dtb,' in preload

@@ -136,6 +136,18 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
         let handoff_dtb = &linux_dtb;
         #[cfg(not(feature = "rp1-scmi-linux-preloaded"))]
         let handoff_dtb = dtb;
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        {
+            let firmware_hz = console_clock_hz(dtb)?;
+            let linux_hz = console_clock_hz(handoff_dtb)?;
+            let (ibrd, fbrd) = crate::uart::baud_divisors();
+            crate::logln!("[SCMILINUX] uart10 firmware_hz={} linux_hz={} ibrd={} fbrd={}",
+                          firmware_hz, linux_hz, ibrd, fbrd);
+            if !crate::scmi_linux_admission::console_clock_matches(firmware_hz, linux_hz, ibrd, fbrd) {
+                crate::logln!("[SCMILINUX] failure=uart10-clock-contract");
+                return Err(BootError::DtbPatch);
+            }
+        }
         // The firmware tree remains authoritative for transport/bootstrap. The
         // downloaded Vec stays alive through the terminal handoff below.
         let rp1_policy =
@@ -177,6 +189,27 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
     crate::logln!("[TFTP] reinitializing GEM after RP1 reload");
     let gem = init_tftp_gem_with_label(dtb, "post-rp1-reload")?;
     boot_kernel_from_tftp_with_lease(dtb, &mut *gem, &clock, &lease, rp1_policy, &mut ports)
+}
+
+#[cfg(feature = "rp1-scmi-linux-preloaded")]
+fn console_clock_hz(parser: &dtb::DtbParser) -> Result<u32, BootError> {
+    use dtb::{DeviceTree, DeviceTreeQueryExt, NodeQueryExt};
+    let tree = DeviceTree::from_parser(parser).map_err(|_| BootError::DtbPatch)?;
+    let provider = tree.find_node_by_path("/clocks/clk-uart")
+        .and_then(|id| tree.node(id)).ok_or(BootError::DtbPatch)?;
+    let uart = tree.find_node_by_path("/soc@107c000000/serial@7d001000")
+        .and_then(|id| tree.node(id)).ok_or(BootError::DtbPatch)?;
+    let rate = provider.property("clock-frequency").ok_or(BootError::DtbPatch)?;
+    let phandle = provider.property("phandle").ok_or(BootError::DtbPatch)?;
+    let clocks = uart.property("clocks").ok_or(BootError::DtbPatch)?;
+    if provider.property("compatible").map(|p| p.value.as_slice()) != Some(b"fixed-clock\0".as_slice())
+        || provider.property("#clock-cells").map(|p| p.value.as_slice()) != Some(&[0,0,0,0])
+        || clocks.value.as_slice().len() != 8
+        || phandle.value.as_slice().len() != 4
+        || clocks.value.as_slice()[..4] != *phandle.value.as_slice() {
+        return Err(BootError::DtbPatch);
+    }
+    Ok(u32::from_be_bytes(rate.value.as_slice().try_into().map_err(|_| BootError::DtbPatch)?))
 }
 
 fn download_rp1_policy_and_reload_if_needed(

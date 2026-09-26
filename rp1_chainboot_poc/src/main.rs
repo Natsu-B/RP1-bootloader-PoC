@@ -2010,6 +2010,12 @@ pub mod uart {
 
     pub fn init() {}
 
+    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+    pub fn baud_divisors() -> (u32, u32) {
+        // Read-only, standard PL011 IBRD/FBRD on the existing BCM2712 console.
+        (read32(0x24), read32(0x28))
+    }
+
     pub fn puts(s: &str) {
         for b in s.bytes() {
             putc(b);

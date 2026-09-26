@@ -2,9 +2,17 @@
 //! External GPIO trace and same-boot Linux IRQ evidence remain separate gates.
 
 pub const LINUX_DTB_SHA256: [u8; 32] = [
-    0x31, 0x7d, 0x8b, 0xdd, 0x84, 0x59, 0x2e, 0xa6, 0x35, 0x5c, 0x33, 0x0f, 0xa2, 0xaf, 0xd4, 0x70,
-    0xc6, 0xed, 0xd6, 0xab, 0x25, 0xbf, 0x15, 0xfc, 0x64, 0x4f, 0x6d, 0x1a, 0x7e, 0x48, 0x3e, 0xf7,
+    0x44, 0x77, 0x03, 0xe2, 0xac, 0xde, 0x2d, 0x83, 0x4f, 0xb6, 0x67, 0x00, 0xf4, 0xd7, 0x1a, 0x6d,
+    0x7a, 0xdd, 0x8b, 0x99, 0x47, 0xf0, 0x24, 0xae, 0x40, 0x94, 0xff, 0x21, 0x90, 0x64, 0xf5, 0xec,
 ];
+
+/// Same-boot console contract, not a physical frequency measurement. Mirror
+/// standard PL011's rounded quotient for the explicitly selected 115200 baud.
+pub fn console_clock_matches(firmware_hz: u32, linux_hz: u32, ibrd: u32, fbrd: u32) -> bool {
+    firmware_hz != 0 && firmware_hz == linux_hz && (1..=0xffff).contains(&ibrd)
+        && fbrd < 64 && u64::from(ibrd) * 64 + u64::from(fbrd)
+            == (u64::from(linux_hz) * 4 + 57_600) / 115_200
+}
 
 pub fn dtb_envelope_valid(bytes: &[u8], address: usize) -> bool {
     address & 7 == 0 && bytes.len() >= 40 && bytes[..4] == [0xd0, 0x0d, 0xfe, 0xed]
@@ -78,6 +86,17 @@ mod tests {
         let mut gate = R1Admission::new();
         for (n, w) in records.iter().enumerate() { gate.sample(n as u32, w); }
         gate.complete()
+    }
+
+    #[test]
+    fn console_clock_contract() {
+        assert!(console_clock_matches(44_236_800, 44_236_800, 24, 0));
+        assert!(console_clock_matches(48_000_000, 48_000_000, 26, 3));
+        for tuple in [(44_236_800,9_216_000,24,0), (44_236_800,44_236_800,5,0),
+                      (0,0,0,0), (44_236_800,44_236_800,24,64),
+                      (44_236_800,44_236_800,0x10000,0)] {
+            assert!(!console_clock_matches(tuple.0,tuple.1,tuple.2,tuple.3));
+        }
     }
 
     #[test]
