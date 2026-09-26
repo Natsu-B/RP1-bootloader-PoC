@@ -925,6 +925,12 @@ pub(crate) fn start_rp1_image_with_debug_sram(
                         attempt,
                         err
                     );
+                    if matches!(err, arch_hal::soc::bcm2712::Bcm2712Error::LinkTimeout) {
+                        // Auto cannot resume a partial root/endpoint setup merely
+                        // because the link comes up before the next attempt.
+                        logln!("[RP1PCIE] fatal=incomplete-link-init retry=forbidden");
+                        return Err(BootError::Rp1Pcie);
+                    }
                 }
             }
         }
@@ -1034,7 +1040,13 @@ fn stock_spi0_wrapper_readonly(dtb: &DtbParser) -> ! {
                 logln!("[RP1STOCKSPI] done; halted before private ABI and Linux");
                 halt();
             }
-            Err(err) => logln!("[RP1STOCKSPI] reinit attempt={} failed: {:?}", attempt, err),
+            Err(err) => {
+                logln!("[RP1STOCKSPI] reinit attempt={} failed: {:?}", attempt, err);
+                if matches!(err, arch_hal::soc::bcm2712::Bcm2712Error::LinkTimeout) {
+                    logln!("[RP1STOCKSPI] fatal=incomplete-link-init retry=forbidden");
+                    halt();
+                }
+            }
         }
     }
     logln!("[RP1STOCKSPI] fatal: bounded reinit exhausted");
