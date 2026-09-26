@@ -138,6 +138,7 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
         let handoff_dtb = dtb;
         #[cfg(feature = "rp1-scmi-linux-preloaded")]
         {
+            dtb_patch::validate_firmware_board(dtb, handoff_dtb)?;
             let firmware_hz = console_clock_hz(dtb)?;
             let linux_hz = console_clock_hz(handoff_dtb)?;
             let (ibrd, fbrd) = crate::uart::baud_divisors();
