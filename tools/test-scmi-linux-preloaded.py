@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """No Cargo/network needed: actual build guard, R1 predicates, preload ordering."""
+import argparse
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -7,6 +9,10 @@ import tempfile
 import tomllib
 
 repo = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser()
+parser.add_argument('--dtb', type=Path, help='Actual candidate input DTB; compare against compiled Rust seal')
+parser.add_argument('--time-anchor', action='store_true')
+args = parser.parse_args()
 feature = 'rp1-scmi-linux-preloaded'
 manifest = tomllib.loads((repo / 'rp1_chainboot_poc/Cargo.toml').read_text())
 features = manifest['features']
@@ -25,8 +31,23 @@ with tempfile.TemporaryDirectory(prefix='scmi-linux-test-') as scratch:
         result = subprocess.run([guard], env=trial, capture_output=True, text=True)
         assert result.returncode != 0 and 'incompatible feature:' in result.stderr, forbidden
     tests = Path(scratch) / 'r1-tests'
-    subprocess.run(['rustc', '--edition=2024', '--test', repo / 'rp1_chainboot_poc/src/scmi_linux_admission.rs', '-o', tests], check=True)
-    subprocess.run([tests], check=True)
+    cfg = ['--cfg', 'feature="rp1-time-anchor"'] if args.time_anchor else []
+    subprocess.run(['rustc', '--edition=2024', '--test', repo / 'rp1_chainboot_poc/src/scmi_linux_admission.rs', *cfg, '-o', tests], check=True)
+    test_env = {k: v for k, v in os.environ.items() if not k.startswith('SCMI_LINUX_DTB_')}
+    if args.dtb:
+        data = args.dtb.read_bytes()
+        test_env.update(SCMI_LINUX_DTB_PATH=str(args.dtb.resolve()),
+                        SCMI_LINUX_DTB_SHA256=hashlib.sha256(data).hexdigest())
+    subprocess.run([tests], env=test_env, check=True)
+    if args.dtb:
+        # A changed actual DT file must fail the same compiled-source test.
+        bad = Path(scratch) / 'changed.dtb'
+        changed = bytearray(data); changed[-1] ^= 1; bad.write_bytes(changed)
+        bad_env = dict(test_env, SCMI_LINUX_DTB_PATH=str(bad),
+                       SCMI_LINUX_DTB_SHA256=hashlib.sha256(changed).hexdigest())
+        rejected = subprocess.run([tests, 'supplied_dtb_seal', '--exact'], env=bad_env, capture_output=True)
+        assert rejected.returncode != 0, 'changed DT accepted'
+        print(f'PASS actual DT seal {test_env["SCMI_LINUX_DTB_SHA256"]}; changed bytes rejected')
     tests = Path(scratch) / 'anchor-tests'
     subprocess.run(['rustc', '--edition=2024', '--test', repo / 'rp1_chainboot_poc/src/rp1_time_anchor.rs', '-o', tests], check=True)
     subprocess.run([tests], check=True)

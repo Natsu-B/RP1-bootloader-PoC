@@ -14,6 +14,11 @@ git rev-parse HEAD
 printf 'selected_feature=%s\n' "$feature"
 git diff --binary > "$out/source.diff"
 git diff --cached --binary > "$out/index.diff"
+if [[ "$feature" == rp1-time-anchor ]]; then
+    : "${RP1_TIME_ANCHOR_DTB:?set the actual reviewed input DTB path}"
+    python3 -B tools/test-scmi-linux-preloaded.py --time-anchor --dtb "$RP1_TIME_ANCHOR_DTB"
+    sha256sum "$RP1_TIME_ANCHOR_DTB" > "$out/input-dtb.sha256"
+fi
 export CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1 CARGO_ENCODED_RUSTFLAGS=''
 export CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=debuginfo
 # build.rs already supplies the linker script; do not add the .cargo flag twice.

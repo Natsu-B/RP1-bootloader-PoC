@@ -29,7 +29,13 @@ survival and same-boot M3/host response IRQs. No hardware proof follows from a b
 
 ## Opt-in read-only host/RP1 time anchor
 
-`RP1_RTOS_READER_FEATURE=rp1-time-anchor bash tools/build-rtos-reader.sh /new/output`
+`RP1_TIME_ANCHOR_DTB=/reviewed/scmi_linux.dtb RP1_RTOS_READER_FEATURE=rp1-time-anchor bash tools/build-rtos-reader.sh /new/output`
+
+The time-anchor feature pins the trace DT input SHA256 `8bad4a3a5940d4c09a1ca9e05d992bc17492bd6d96c20ce6e932a39b63ccc17f`.
+Its build helper compiles the actual Rust admission source and compares the
+actual supplied DT bytes before Cargo; a one-byte changed DT must fail.
+The feature-off DT seal remains unchanged. Direct Cargo builds still retain
+the same runtime fail-closed hash check, but do not replace this build admission.
 adds only timestamp reads to the admitted `rp1-scmi-linux-preloaded` path. The
 feature is off by default. The existing post-reload `Rp1Config` supplies a checked
 BAR1 range for RawTimer high/low (`0xac024`/`0xac028`); no new PCIe/GEM init or

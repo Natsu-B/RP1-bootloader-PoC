@@ -1,7 +1,7 @@
 //! Runtime R1 subset of HAL tools/check-freertos-runtime.py::validate.
 //! External GPIO trace and same-boot Linux IRQ evidence remain separate gates.
 
-pub const LINUX_DTB_SHA256: [u8; 32] = [
+const LEGACY_LINUX_DTB_SHA256: [u8; 32] = [
     0x43, 0x9a, 0xc6, 0x87, 0x4b, 0xf9, 0x70, 0x2f, 0xbe, 0xa1, 0x7d, 0xae, 0x87, 0xd4, 0x72, 0x9b,
     0x55, 0xe3, 0x7b, 0x4e, 0xec, 0x64, 0xc2, 0x11, 0xee, 0x36, 0x55, 0xa0, 0x4c, 0xb8, 0xe9, 0x59,
 ];
@@ -153,5 +153,25 @@ mod tests {
                 assert_eq!(rows, 31 * 64); assert!(admitted(&records), "{path}");
             }
         }
+    }
+}
+
+// Exact reviewed trace-DT input, not a generic hash override. Keep the legacy
+// image's contract when time observation is disabled.
+pub const LINUX_DTB_SHA256: [u8; 32] = if cfg!(feature = "rp1-time-anchor") {
+    [0x8b, 0xad, 0x4a, 0x3a, 0x59, 0x40, 0xd4, 0xc0, 0x9a, 0x1c, 0xa9, 0xe0, 0x5d, 0x99, 0x2b, 0xc1,
+     0x74, 0x92, 0xbd, 0x6d, 0x96, 0xc2, 0x0c, 0xe6, 0xe9, 0x32, 0xa3, 0x9b, 0x63, 0xcc, 0xc1, 0x7f]
+} else { LEGACY_LINUX_DTB_SHA256 };
+
+#[test]
+fn supplied_dtb_seal() {
+    if let Ok(path) = std::env::var("SCMI_LINUX_DTB_PATH") {
+        let bytes = std::fs::read(path).unwrap();
+        assert!(dtb_envelope_valid(&bytes, 0x1000));
+        let digest = std::env::var("SCMI_LINUX_DTB_SHA256").unwrap();
+        assert_eq!(digest.len(), 64);
+        let expected: Vec<_> = (0..32).map(|i|
+            u8::from_str_radix(&digest[i*2..i*2+2], 16).unwrap()).collect();
+        assert_eq!(expected.as_slice(), &LINUX_DTB_SHA256);
     }
 }
