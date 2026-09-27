@@ -31,12 +31,12 @@ survival and same-boot M3/host response IRQs. No hardware proof follows from a b
 
 `RP1_TIME_ANCHOR_DTB=/reviewed/scmi_linux.dtb RP1_RTOS_READER_FEATURE=rp1-time-anchor bash tools/build-rtos-reader.sh /new/output`
 
-The time-anchor feature pins the trace DT input SHA256 `8bad4a3a5940d4c09a1ca9e05d992bc17492bd6d96c20ce6e932a39b63ccc17f`.
+The time-anchor feature pins the trace DT input SHA256 `c585029db148552f27e9a63dbdf7ab15f580eac29e799104584215f3fe3ef98c`.
 Its build helper compiles the actual Rust admission source and compares the
 actual supplied DT bytes before Cargo; a one-byte changed DT must fail.
 The feature-off DT seal remains unchanged. Direct Cargo builds still retain
 the same runtime fail-closed hash check, but do not replace this build admission.
-adds only timestamp reads to the admitted `rp1-scmi-linux-preloaded` path. The
+It adds only timestamp reads to the admitted `rp1-scmi-linux-preloaded` path. The
 feature is off by default. The existing post-reload `Rp1Config` supplies a checked
 BAR1 range for RawTimer high/low (`0xac024`/`0xac028`); no new PCIe/GEM init or
 RP1 MMIO write is added. Each H/L/H observation retries at most four times.
@@ -737,7 +737,7 @@ PoC goal: reload RP1 firmware, continue using BCM2712 SDHC, then boot Linux.
 
 ### Read-only standard kprobe DT admission (2026-09-27)
 
-The opt-in `rp1-time-anchor` input DT seal now selects SHA256
+The earlier seven-hook `rp1-time-anchor` input DT seal selected SHA256
 `3b89e53c413774e6ec4a9cf398989ab73161b88a1b3d5b68162e746367e655d0`.
 It records standard boot kprobe entry/return arguments without a Linux source
 patch. The prior function-only trace DT remains historical evidence, not an
@@ -746,6 +746,15 @@ byte-identical (`0bcb9cb1ab1f4ff33fd10b00b82057729b945cdef9074b8e51e3e162a0d1aa7
 Actual DT-byte and mutation rejection tests are still required by the normal
 builder through `RP1_TIME_ANCHOR_DTB`. This update does not enable config repair
 or grant a host-access exclusion window; hardware acceptance is separate.
+
+The current eleven-hook candidate instead selects
+`c585029db148552f27e9a63dbdf7ab15f580eac29e799104584215f3fe3ef98c`:
+standard probe entry/return, resource0 and ioremap scalar-return hooks add
+physical-controller attribution without guessed structure offsets. The
+earlier seven-hook and function-only DTs remain historical evidence. Only
+this opt-in exact digest changes in boot code; the default seal is unchanged.
+New hardware acceptance and a finite host-access exclusion remain separate
+requirements. No endpoint writer is enabled by this change.
 
 The following order is the same for UART and semihosting backends:
 
