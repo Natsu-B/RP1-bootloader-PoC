@@ -735,6 +735,18 @@ PoC goal: reload RP1 firmware, continue using BCM2712 SDHC, then boot Linux.
 
 ## Expected Log Order
 
+### Read-only standard kprobe DT admission (2026-09-27)
+
+The opt-in `rp1-time-anchor` input DT seal now selects SHA256
+`3b89e53c413774e6ec4a9cf398989ab73161b88a1b3d5b68162e746367e655d0`.
+It records standard boot kprobe entry/return arguments without a Linux source
+patch. The prior function-only trace DT remains historical evidence, not an
+accepted input to this build. The default non-anchor raw boot image remains
+byte-identical (`0bcb9cb1ab1f4ff33fd10b00b82057729b945cdef9074b8e51e3e162a0d1aa78`).
+Actual DT-byte and mutation rejection tests are still required by the normal
+builder through `RP1_TIME_ANCHOR_DTB`. This update does not enable config repair
+or grant a host-access exclusion window; hardware acceptance is separate.
+
 The following order is the same for UART and semihosting backends:
 
 ```text
