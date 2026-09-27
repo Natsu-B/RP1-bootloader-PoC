@@ -266,11 +266,11 @@ impl Rp1PcieTransport {
 
     #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     fn log_scmi_cold_sample(&self, sample: u32) -> bool {
-        // Fixed ABI of sealed ELFa851006b...4b7ac18, checked before RP1 reload.
+        // Fixed ABI of sealed ELF5d823ce7...c8fd43, checked before RP1 reload.
         // Startup/ISR telemetry only: these are not live NVIC mask snapshots.
         const EXPECTED: [u32; 27] = [0x3149_4353, 1, 2, 1,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0x2000_0000, 0x2000_01c1, 0x2000_d7c0, 0xc0, 1, 0, 0, 0];
+            0x2000_0000, 0x2000_0291, 0x2000_d7c0, 0xc0, 1, 0, 0, 0];
         let Ok(base) = self.translate_rp1_addr(0x2000_a298, 108) else {
             crate::logln!("[SCMI] failure=BAR2-range"); return false;
         };
