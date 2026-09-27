@@ -266,7 +266,7 @@ impl Rp1PcieTransport {
 
     #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     fn log_scmi_cold_sample(&self, sample: u32) -> bool {
-        // Fixed ABI of sealed ELF85396a0d...51fda3, checked before RP1 reload.
+        // Fixed ABI of sealed ELF8a4c7d00...3698ea, checked before RP1 reload.
         // Startup/ISR telemetry only: these are not live NVIC mask snapshots.
         const EXPECTED: [u32; 27] = [0x3149_4353, 1, 2, 1,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
