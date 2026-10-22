@@ -79,8 +79,12 @@ mod rp1_image;
 #[cfg(feature = "rp1-inbound-monitor-block-proof")]
 mod rp1_inbound_monitor;
 mod rp1_note;
+#[cfg(feature = "rp1-gdb-debug-stub")]
+mod rp1_pcie_snapshot;
 #[cfg(feature = "rp1-scmi-linux-preloaded")]
 mod scmi_linux_admission;
+#[cfg(feature = "rp1-amp-service")]
+mod amp_service_admission;
 
 const RP1_ELF_PATHS: &[&str] = &["/RP1.elf", "/rp1/RP1.elf", "/rp1/rp1.elf", "/RP1/RP1.ELF"];
 
@@ -1074,57 +1078,25 @@ fn log_rp1_pcie_audit(dtb: &DtbParser, label: &'static str) {
 
 #[cfg(feature = "rp1-gdb-debug-stub")]
 fn log_rp1_pcie_config_dump(rp1: &arch_hal::soc::bcm2712::Rp1Config, label: &'static str) {
-    const RP1_PERIPHERAL_BASE: u64 = 0x4000_0000;
-    const RP1_PCIE_CFG_BASE: u64 = 0x4010_8000;
-    let Some((peripheral_base, peripheral_size)) = rp1.peripheral_addr else {
-        logln!("[RP1PCIECFG] {} peripheral BAR missing", label);
-        return;
+    use arch_hal::soc::bcm2712::rp1::Rp1PeripheralMap;
+    use rp1_pcie_snapshot::{DBI, MONITOR2, SELECTOR};
+    let Ok(map) = Rp1PeripheralMap::from_config(rp1) else {
+        logln!("[RP1PCIEDBI] {} invalid peripheral BAR", label); return;
     };
-    let Some(offset) = RP1_PCIE_CFG_BASE.checked_sub(RP1_PERIPHERAL_BASE) else {
-        logln!("[RP1PCIECFG] {} invalid cfg offset", label);
-        return;
+    let (Ok(apbs), Ok(dbi)) = (map.mmio_base(SELECTOR, MONITOR2 - SELECTOR + 4), map.mmio_base(DBI, 28)) else {
+        logln!("[RP1PCIEDBI] {} observer outside peripheral BAR", label); return;
     };
-    let Some(end) = offset.checked_add(0x80) else {
-        logln!("[RP1PCIECFG] {} cfg offset overflow", label);
-        return;
-    };
-    if end > peripheral_size {
-        logln!(
-            "[RP1PCIECFG] {} cfg outside BAR peripheral=0x{:x} size=0x{:x} offset=0x{:x}",
-            label,
-            peripheral_base,
-            peripheral_size,
-            offset
-        );
-        return;
-    }
-    let Some(cpu_base) = peripheral_base.checked_add(offset) else {
-        logln!("[RP1PCIECFG] {} cfg cpu alias overflow", label);
-        return;
-    };
-    logln!(
-        "[RP1PCIECFG] {} peripheral_base=0x{:x} size=0x{:x} cfg_cpu=0x{:x}",
-        label,
-        peripheral_base,
-        peripheral_size,
-        cpu_base
-    );
-    for row in (0..0x80usize).step_by(16) {
-        unsafe {
-            let a = core::ptr::read_volatile((cpu_base as usize + row) as *const u32);
-            let b = core::ptr::read_volatile((cpu_base as usize + row + 4) as *const u32);
-            let c = core::ptr::read_volatile((cpu_base as usize + row + 8) as *const u32);
-            let d = core::ptr::read_volatile((cpu_base as usize + row + 12) as *const u32);
-            logln!(
-                "[RP1PCIECFG] {} +0x{:03x}: {:08x} {:08x} {:08x} {:08x}",
-                label,
-                row,
-                a,
-                b,
-                c,
-                d
-            );
+    match rp1_pcie_snapshot::snapshot(|offset| {
+        let addr = if offset >= DBI { dbi + (offset - DBI) as usize } else { apbs + (offset - SELECTOR) as usize };
+        unsafe { core::ptr::read_volatile(addr as *const u32) }
+    }) {
+        Ok(header) => {
+            logln!("[RP1PCIEDBI] {} valid=1 dbi_cpu=0x{:x} header_words=7", label, dbi);
+            for (i, word) in header.iter().enumerate() {
+                logln!("[RP1PCIEDBI] {} +0x{:02x}: {:08x}", label, i * 4, word);
+            }
         }
+        Err(error) => logln!("[RP1PCIEDBI] {} valid=0 error={:?}", label, error),
     }
 }
 
@@ -1761,11 +1733,21 @@ pub(crate) fn log_rp1_elf_file_selection(
     elf_bytes: &[u8],
 ) -> Result<rp1_image::Rp1ElfInfo, BootError> {
     let file_digest = hash::sha256_bytes(elf_bytes);
-    #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
-    if file_digest != [0xc1, 0xf0, 0xda, 0x80, 0xdf, 0x92, 0x84, 0x91,
-        0x51, 0x24, 0x2e, 0xd1, 0xf8, 0x6b, 0xbc, 0x3a,
-        0x9e, 0xcb, 0x09, 0xb0, 0xd0, 0x98, 0x53, 0x09,
-        0xf1, 0x36, 0x30, 0x3a, 0xca, 0xc1, 0x13, 0x63] {
+    #[cfg(all(feature = "rp1-amp-service", not(feature = "rp1-amp-proc1")))]
+    if file_digest != amp_service_admission::FIRMWARE_SHA256 {
+        logln!("[AMP_SERVICE] failure=sealed-ELF-hash actual={}",hash::Sha256Hex(&file_digest));
+        return Err(BootError::Rp1ImageInvalid);
+    }
+    #[cfg(feature = "rp1-amp-proc1")]
+    if file_digest != amp_proc1_admission::firmware_sha256() {
+        logln!("[AMP_PROC1] failure=sealed-ELF-hash actual={}",hash::Sha256Hex(&file_digest));
+        return Err(BootError::Rp1ImageInvalid);
+    }
+    #[cfg(all(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"), not(feature = "rp1-amp-service")))]
+    if file_digest != [0x45, 0x17, 0x8f, 0xb2, 0x43, 0x79, 0x09, 0x78,
+        0xde, 0x5f, 0xcc, 0x03, 0xd4, 0x5f, 0x13, 0x53,
+        0x1a, 0xea, 0x0e, 0x9b, 0x82, 0xd8, 0xcd, 0xee,
+        0xbb, 0x2b, 0xae, 0x34, 0x3b, 0x27, 0xab, 0xdf] {
         logln!("[SCMI] failure=sealed-ELF-hash actual={}", hash::Sha256Hex(&file_digest));
         return Err(BootError::Rp1ImageInvalid);
     }
@@ -2305,3 +2287,5 @@ compile_error!("I2C read1 final reader requires the isolated final ABI and repla
 // Keep feature-off panic-source line numbers and raw images unchanged.
 #[cfg(feature = "rp1-time-anchor")]
 mod rp1_time_anchor;
+#[cfg(feature = "rp1-amp-proc1")]
+mod amp_proc1_admission;

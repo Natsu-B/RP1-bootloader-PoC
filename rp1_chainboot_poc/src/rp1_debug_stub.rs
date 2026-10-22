@@ -154,8 +154,12 @@ impl Rp1PcieTransport {
         compile_error!("Watchdog receipt uses bounded31-sample cadence, not soak");
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
         let mut watchdog_requested = false;
-        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        #[cfg(all(feature = "rp1-scmi-linux-preloaded", not(feature = "rp1-amp-service")))]
         let mut r1_admission = crate::scmi_linux_admission::R1Admission::new();
+        #[cfg(all(feature = "rp1-amp-service", not(feature = "rp1-amp-proc1")))]
+        let mut r1_admission = crate::amp_service_admission::AmpServiceAdmission::new();
+        #[cfg(feature = "rp1-amp-proc1")]
+        let mut r1_admission = crate::amp_proc1_admission::AmpProc1Admission::new();
         #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
         let mut scmi_admitted;
         #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
@@ -206,10 +210,34 @@ impl Rp1PcieTransport {
                     sample, row * 4, words[0], words[1], words[2], words[3]);
             }
             crate::logln!("[RTOS] sample={} end", sample);
-            #[cfg(feature = "rp1-scmi-linux-preloaded")]
+            #[cfg(all(feature = "rp1-scmi-linux-preloaded", not(feature = "rp1-amp-proc1")))]
             if !r1_admission.sample(sample, &snapshot) {
-                crate::logln!("[SCMILINUX] failure=R1-sample sample={}", sample);
+                crate::logln!("[SCMILINUX] failure=runtime-sample sample={} profile={}", sample,
+                    if cfg!(feature = "rp1-amp-service") {"AG01"} else {"RT01"});
                 scmi_admitted = false;
+            }
+            #[cfg(feature = "rp1-amp-proc1")]
+            {
+                use arch_hal::soc::bcm2712::rp1::Rp1PeripheralMap;
+                let Ok(reset_base)=Rp1PeripheralMap::from_config(_rp1)
+                    .and_then(|map|map.mmio_base(0x0001_4000,0x1c)) else {
+                        crate::logln!("[AMP_PROC1] failure=BAR1-reset-range"); return false;
+                    };
+                if reset_base&3!=0 || reset_base.checked_add(0x1c).is_none() {return false;}
+                let Ok(status_base)=self.translate_rp1_addr(0x2000_ba00,128) else {return false};
+                let ctrl=unsafe {(reset_base as *const u32).read_volatile()};
+                let done=unsafe {((reset_base+0x18) as *const u32).read_volatile()};
+                let status: [u32;32]=core::array::from_fn(|i| unsafe {
+                    ((status_base+i*4) as *const u32).read_volatile()
+                });
+                for (row,w) in status.chunks_exact(4).enumerate() {
+                    crate::logln!("[AMP_PROC1_COLD] {} {} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                        sample,row*4,ctrl,done,w[0],w[1],w[2],w[3]);
+                }
+                if !r1_admission.sample(sample,&snapshot,ctrl,done,&status) {
+                    crate::logln!("[AMP_PROC1] failure=cold-runtime sample={}",sample);
+                    scmi_admitted=false;
+                }
             }
             #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
             { scmi_admitted &= self.log_scmi_cold_sample(sample); }
@@ -224,6 +252,10 @@ impl Rp1PcieTransport {
                 crate::logln!("[SCMI] failure=cold-admission"); return false;
             }
         }
+        #[cfg(all(feature = "rp1-amp-service", not(feature = "rp1-amp-proc1")))]
+        crate::logln!("[AMP_SERVICE] admission=PASS tasks=2 phase=0 proc1=HELD");
+        #[cfg(feature = "rp1-amp-proc1")]
+        crate::logln!("[AMP_PROC1] admission=PASS tasks=2 phase=1 proc1=HELD");
         #[cfg(not(feature = "rp1-rtos-watchdog-receipt"))]
         crate::logln!("[RTOS] observer-complete read-only=1");
         #[cfg(feature = "rp1-rtos-watchdog-receipt")]
@@ -247,7 +279,8 @@ impl Rp1PcieTransport {
                 core::arch::asm!("dsb sy", options(nostack, preserves_flags));
                 let ready = seq == 2 && p.read_volatile() == 0x3149_4353
                     && p.add(1).read_volatile() == 1 && p.add(3).read_volatile() == 1
-                    && r.read_volatile() == 0x3130_5452 && r.add(1).read_volatile() == 1
+                    && r.read_volatile() == if cfg!(feature = "rp1-amp-service") {u32::from_le_bytes(*b"AG01")} else {0x3130_5452}
+                    && r.add(1).read_volatile() == 1
                     && (4..=5).contains(&r.add(2).read_volatile())
                     && r.add(3).read_volatile() == 0 && r.add(4).read_volatile() == 0
                     && r.add(8).read_volatile() > 0;
@@ -266,11 +299,17 @@ impl Rp1PcieTransport {
 
     #[cfg(any(feature = "rp1-scmi-cold-observer", feature = "rp1-scmi-linux-preloaded"))]
     fn log_scmi_cold_sample(&self, sample: u32) -> bool {
-        // Fixed ABI of sealed ELFdd3df0d7...1dfb, checked before RP1 reload.
+        // Fixed cold ABI for the selected sealed ELF, checked before RP1 reload.
         // Startup/ISR telemetry only: these are not live NVIC mask snapshots.
+        #[cfg(all(feature = "rp1-amp-service", not(feature = "rp1-amp-proc1")))]
+        const HANDLER: u32 = crate::amp_service_admission::SCMI_HANDLER;
+        #[cfg(feature = "rp1-amp-proc1")]
+        const HANDLER: u32 = crate::amp_proc1_admission::SCMI_HANDLER;
+        #[cfg(not(feature = "rp1-amp-service"))]
+        const HANDLER: u32 = 0x2000_0291;
         const EXPECTED: [u32; 27] = [0x3149_4353, 1, 2, 1,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0x2000_0000, 0x2000_0291, 0x2000_d7c0, 0xc0, 1, 0, 0, 0];
+            0x2000_0000, HANDLER, 0x2000_d7c0, 0xc0, 1, 0, 0, 0];
         let Ok(base) = self.translate_rp1_addr(0x2000_a298, 108) else {
             crate::logln!("[SCMI] failure=BAR2-range"); return false;
         };

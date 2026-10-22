@@ -15,7 +15,8 @@ const ELFCLASS32: u8 = 1;
 const ELFDATA2LSB: u8 = 1;
 const EM_ARM: u16 = 40;
 const PT_LOAD: u32 = 1;
-pub const RP1_ELF_MAX_LOGGED_LOADS: usize = 8;
+pub const RP1_ELF_MAX_LOGGED_LOADS: usize = if cfg!(feature = "rp1-amp-observation") { 12 }
+    else if cfg!(feature = "rp1-amp-proc1") { 9 } else { 8 };
 
 pub struct Rp1Image<'a> {
     pub payload: &'a [u8],
