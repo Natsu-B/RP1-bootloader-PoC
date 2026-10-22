@@ -30,6 +30,7 @@ rp1-time-anchor = ["rp1-scmi-linux-preloaded"]
 rp1-amp-service = ["rp1-time-anchor"]
 rp1-amp-proc1 = ["rp1-amp-service"]
 rp1-amp-observation = ["rp1-amp-proc1"]
+rp1-amp-clk-sys-200 = ["rp1-amp-observation"]
 rp1-amp-proc1-profile = ["rp1-amp-observation"]
 # Diagnostic: profiler firmware whose C1 stack is in proc-local DSRAM.
 rp1-amp-proc1-local-stack = ["rp1-amp-proc1-profile"]

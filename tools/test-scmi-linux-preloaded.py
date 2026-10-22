@@ -19,6 +19,7 @@ parser.add_argument('--amp-observation', action='store_true')
 parser.add_argument('--amp-proc1-profile', action='store_true')
 parser.add_argument('--amp-proc1-local-stack', action='store_true')
 parser.add_argument('--amp-proc1-no-hooks', action='store_true')
+parser.add_argument('--amp-clk-sys-200', action='store_true')
 parser.add_argument('--firmware', type=Path, help='Actual sealed AG01 ELF for its vector/hash test')
 args = parser.parse_args()
 if args.amp_proc1 and not args.amp_service: parser.error('--amp-proc1 requires --amp-service')
@@ -26,6 +27,7 @@ if args.amp_observation and not args.amp_proc1: parser.error('--amp-observation 
 if args.amp_proc1_profile and not args.amp_observation: parser.error('--amp-proc1-profile requires --amp-observation')
 if args.amp_proc1_local_stack and not args.amp_proc1_profile: parser.error('--amp-proc1-local-stack requires --amp-proc1-profile')
 if args.amp_proc1_no_hooks and not args.amp_proc1_local_stack: parser.error('--amp-proc1-no-hooks requires --amp-proc1-local-stack')
+if args.amp_clk_sys_200 and not args.amp_observation: parser.error('--amp-clk-sys-200 requires --amp-observation')
 if args.amp_service and not args.firmware: parser.error('--amp-service requires --firmware')
 feature = 'rp1-scmi-linux-preloaded'
 manifest = tomllib.loads((repo / 'rp1_chainboot_poc/Cargo.toml').read_text())
@@ -38,6 +40,7 @@ if args.amp_observation: allowed.add('rp1-amp-observation')
 if args.amp_proc1_profile: allowed.add('rp1-amp-proc1-profile')
 if args.amp_proc1_local_stack: allowed.add('rp1-amp-proc1-local-stack')
 if args.amp_proc1_no_hooks: allowed.add('rp1-amp-proc1-no-hooks')
+if args.amp_clk_sys_200: allowed.add('rp1-amp-clk-sys-200')
 assert features[feature] == ['rp1-rtos-record', 'tftp-initramfs']
 assert features['rp1-time-anchor'] == [feature]
 assert features['rp1-amp-service'] == ['rp1-time-anchor']
@@ -46,13 +49,14 @@ assert features['rp1-amp-observation'] == ['rp1-amp-proc1']
 assert features['rp1-amp-proc1-profile'] == ['rp1-amp-observation']
 assert features['rp1-amp-proc1-local-stack'] == ['rp1-amp-proc1-profile']
 assert features['rp1-amp-proc1-no-hooks'] == ['rp1-amp-proc1-local-stack']
+assert features['rp1-amp-clk-sys-200'] == ['rp1-amp-observation']
 env = {k: v for k, v in os.environ.items() if not k.startswith('CARGO_FEATURE_')}
 env.update({'CARGO_FEATURE_' + f.upper().replace('-', '_'): '1' for f in allowed})
 with tempfile.TemporaryDirectory(prefix='scmi-linux-test-') as scratch:
     guard = Path(scratch) / 'build-guard'
     subprocess.run(['rustc', '--edition=2024', repo / 'rp1_chainboot_poc/build.rs', '-o', guard], check=True)
     subprocess.run([guard], env=env, check=True, capture_output=True)
-    for forbidden in features.keys() - allowed - {'rp1-amp-service','rp1-amp-proc1','rp1-amp-observation','rp1-amp-proc1-profile','rp1-amp-proc1-local-stack','rp1-amp-proc1-no-hooks'}:
+    for forbidden in features.keys() - allowed - {'rp1-amp-service','rp1-amp-proc1','rp1-amp-observation','rp1-amp-proc1-profile','rp1-amp-proc1-local-stack','rp1-amp-proc1-no-hooks','rp1-amp-clk-sys-200'}:
         trial = dict(env, **{'CARGO_FEATURE_' + forbidden.upper().replace('-', '_'): '1'})
         result = subprocess.run([guard], env=trial, capture_output=True, text=True)
         assert result.returncode != 0 and 'incompatible feature:' in result.stderr, forbidden
@@ -64,6 +68,7 @@ with tempfile.TemporaryDirectory(prefix='scmi-linux-test-') as scratch:
     if args.amp_proc1_profile: cfg += ['--cfg','feature="rp1-amp-proc1-profile"']
     if args.amp_proc1_local_stack: cfg += ['--cfg','feature="rp1-amp-proc1-local-stack"']
     if args.amp_proc1_no_hooks: cfg += ['--cfg','feature="rp1-amp-proc1-no-hooks"']
+    if args.amp_clk_sys_200: cfg += ['--cfg','feature="rp1-amp-clk-sys-200"']
     subprocess.run(['rustc', '--edition=2024', '--test', repo / 'rp1_chainboot_poc/src/scmi_linux_admission.rs', *cfg, '-o', tests], check=True)
     test_env = {k: v for k, v in os.environ.items() if not k.startswith('SCMI_LINUX_DTB_')}
     if args.dtb:
