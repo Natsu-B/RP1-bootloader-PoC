@@ -15,7 +15,8 @@ const ELFCLASS32: u8 = 1;
 const ELFDATA2LSB: u8 = 1;
 const EM_ARM: u16 = 40;
 const PT_LOAD: u32 = 1;
-pub const RP1_ELF_MAX_LOGGED_LOADS: usize = if cfg!(feature = "rp1-amp-observation") { 12 }
+pub const RP1_ELF_MAX_LOGGED_LOADS: usize = if cfg!(feature = "rp1-amp-proc1-profile") { 13 }
+    else if cfg!(feature = "rp1-amp-observation") { 12 }
     else if cfg!(feature = "rp1-amp-proc1") { 9 } else { 8 };
 
 pub struct Rp1Image<'a> {
@@ -125,6 +126,16 @@ pub fn inspect_rp1_elf(elf_bytes: &[u8]) -> Result<Rp1ElfInfo, BootError> {
             .ok_or(BootError::AddressOverflow)?;
         if load.filesz > load.memsz || file_end > elf_bytes.len() {
             return Err(BootError::Rp1ImageInvalid);
+        }
+        if cfg!(feature = "rp1-amp-proc1-profile") {
+            let end = load.paddr.checked_add(load.memsz).ok_or(BootError::AddressOverflow)?;
+            // Keep the MSP, profiler scratch/results and RTOS record out of PT_LOADs.
+            if load.vaddr != load.paddr || load.paddr < RP1_SRAM_BASE
+                || (end > 0x2000_e000 && !(load.paddr == 0x2000_f000
+                    && end <= 0x2000_f600 && load.filesz == load.memsz
+                    && load.filesz != 0 && load.flags == 5)) {
+                return Err(BootError::Rp1ImageInvalid);
+            }
         }
         loads[load_count] = load;
         load_count += 1;
