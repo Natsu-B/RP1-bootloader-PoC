@@ -3,6 +3,8 @@ use rp1_abi::note::{
     RP1_VERSION_NON_PIO, Rp1BootInfoV1,
 };
 
+const MAILBOX_FLAGS_SUPPORTED_MASK: u32 = 0x3;
+
 pub enum Rp1NoteState {
     Valid(Rp1BootInfo),
     Missing,
@@ -145,6 +147,9 @@ fn parse_boot_info(desc: &[u8]) -> Rp1NoteState {
     let Some(mailbox_flags) = le32_opt(desc, 72) else {
         return Rp1NoteState::Invalid;
     };
+    if mailbox_flags & !MAILBOX_FLAGS_SUPPORTED_MASK != 0 {
+        return Rp1NoteState::Invalid;
+    }
 
     Rp1NoteState::Valid(Rp1BootInfo {
         owner_rp1,
@@ -193,4 +198,35 @@ fn le64_opt(bytes: &[u8], off: usize) -> Option<u64> {
     Some(u64::from_le_bytes([
         src[0], src[1], src[2], src[3], src[4], src[5], src[6], src[7],
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn desc_with_mailbox_flags(mailbox_flags: u32) -> [u8; Rp1BootInfoV1::SIZE] {
+        let mut desc = [0; Rp1BootInfoV1::SIZE];
+        desc[0..8].copy_from_slice(&RP1_NOTE_MAGIC);
+        desc[8..10].copy_from_slice(&RP1_NOTE_ABI_VERSION.to_le_bytes());
+        desc[10..12].copy_from_slice(&(Rp1BootInfoV1::SIZE as u16).to_le_bytes());
+        desc[72..76].copy_from_slice(&mailbox_flags.to_le_bytes());
+        desc[76..80].copy_from_slice(&RP1_VERSION_NON_PIO.to_le_bytes());
+        desc
+    }
+
+    #[test]
+    fn mailbox_flags_reject_reserved_bits() {
+        for mailbox_flags in [0, 1, 2, 3] {
+            match parse_boot_info(&desc_with_mailbox_flags(mailbox_flags)) {
+                Rp1NoteState::Valid(note) => assert_eq!(note.mailbox_flags, mailbox_flags),
+                _ => panic!("supported mailbox flags rejected: {mailbox_flags:#x}"),
+            }
+        }
+        for mailbox_flags in [4, 0x8000_0000] {
+            assert!(matches!(
+                parse_boot_info(&desc_with_mailbox_flags(mailbox_flags)),
+                Rp1NoteState::Invalid
+            ));
+        }
+    }
 }

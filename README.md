@@ -1,5 +1,91 @@
 # RP1 Chainboot PoC
 
+## Opt-in preloaded standard-Linux SCMI commissioning
+
+`rp1-scmi-linux-preloaded` is independent of the bare-metal observer (which still
+halts). Build with `RP1_RTOS_READER_FEATURE=rp1-scmi-linux-preloaded bash
+tools/build-rtos-reader.sh /new/output`. Only log-uart, require-rp1-img, the optional
+rp1-time-anchor and its read-only/TFTP prerequisites may be combined with it; all other features,
+including defaults, observer, failure continuation and skip-reload are rejected.
+
+It downloads `linux_2712.img`, nonempty `initramfs_2712` and `scmi_linux.dtb`
+before cold reload, then releases GEM and uses the same sealed ELF, readiness, clock and SCMI cold
+checks below. R1 record/progress/tick predicates from the unchanged HAL runtime
+validator are additionally required before returning to the preloaded Linux
+handoff. Failure cannot continue to Linux; no state-5 replay or post-cold GEM
+initialization is added. The firmware DT remains in use for transport/bootstrap;
+only Linux receives the downloaded DT, sealed to
+`317d8bdd84592ea6355c330fa2afd470c6edd6ab25bf15fc644f6d1a7e483ef7` with checked
+alignment/header/exact length. The input/output DT and kernel/initrd SHA256+length
+are logged for the separately sealed deployment bundle. Actual patched DT uses
+the `linux.handoff.dtb` receipt. No firmware DT/config replacement is needed.
+
+Run `python3 -B tools/test-scmi-linux-preloaded.py`; optionally set `SCMI_R1_LOGS`
+to colon-separated retained UART logs for the actual R1 predicate check.
+Run the unchanged cold/R1/read-only/trace validators separately. This mode is
+transport-only commissioning, NOT final coexistence admission: independently
+validate the effective handoff DT and RAM-only init, then prove standard PCIe
+survival and same-boot M3/host response IRQs. No hardware proof follows from a build.
+
+## Opt-in read-only host/RP1 time anchor
+
+`RP1_TIME_ANCHOR_DTB=/reviewed/scmi_linux.dtb RP1_RTOS_READER_FEATURE=rp1-time-anchor bash tools/build-rtos-reader.sh /new/output`
+
+The time-anchor feature pins the trace DT input SHA256 `c585029db148552f27e9a63dbdf7ab15f580eac29e799104584215f3fe3ef98c`.
+Its build helper compiles the actual Rust admission source and compares the
+actual supplied DT bytes before Cargo; a one-byte changed DT must fail.
+The feature-off DT seal remains unchanged. Direct Cargo builds still retain
+the same runtime fail-closed hash check, but do not replace this build admission.
+It adds only timestamp reads to the admitted `rp1-scmi-linux-preloaded` path. The
+feature is off by default. The existing post-reload `Rp1Config` supplies a checked
+BAR1 range for RawTimer high/low (`0xac024`/`0xac028`); no new PCIe/GEM init or
+RP1 MMIO write is added. Each H/L/H observation retries at most four times.
+Completion barriers and ordered physical `CNTPCT_EL0` reads enclose each sample.
+All 16 samples are captured before `[RP1ANCHOR]` output; no delay is inserted.
+
+The version-1 header identifies the counter, count, assumed 1 MHz RawTimer tick
+and retry limit. Each sample logs its host-before/after interval, `CNTFRQ_EL0`,
+before/after `CNTVOFF_EL2`, all three timer words, attempts and `valid`/`error`.
+`raw64` is the high-before/low concatenation and is usable only with `valid=1`;
+mapping failure explicitly reports zero attempts and invalid placeholder words.
+Missing/invalid samples invalidate the anchor dataset, not the existing cold
+admission gate: this observational feature does not silently substitute another
+clock or change Linux handoff behavior. CPU access faults/nonresponding buses
+cannot be recovered by the finite rollover retry loop.
+
+Linux handoff clears CNTVOFF, so pre-handoff virtual counts are not directly
+comparable; this anchor deliberately uses physical counts and records the offset.
+It does not prove an exact electrical edge, first downstream scan, stable future
+drift, or writer admission. Preserve intervals and 1 us timer quantization; do not
+replace them with exact midpoint timestamps. Run the existing
+`python3 -B tools/test-scmi-linux-preloaded.py` for anchor rollover/error checks
+as well as the sealed preloaded admission checks.
+
+## Opt-in sealed SCMI cold observer
+
+`rp1-scmi-cold-observer` preserves the 31 RTOS records and read-only completion.
+It only admits RP1 ELF SHA256
+`96adabc0c811f137d7260cf0fa13637c43edca48cd1166df2f68ab0a2db80dc8`, then reads
+the fixed 108-byte telemetry at `0x2000a648` with at most four seqlock attempts
+per sample. Equal even sequence values and the exact cold tuple are required.
+Known PLL_SYS/APB100 and UART50 register tuples are read twice before and after
+the samples; mismatch prevents completion. Startup waits at most100 attempts of
+50ms for SCMI-ready plus R1 stage/progress without fault. This is readiness polling,
+not IRQ proof. Admission failure still retains all31 R1/fault and SCMI snapshots
+for diagnosis; neither the success tuple nor final validator is relaxed.
+No added mailbox or MMIO writes.
+The feature is incompatible with watchdog requests, soak/mixed-repeat, skipped reload and
+continue-on-bootstrap-failure. Feature-off keeps the prior observer behavior.
+
+Build with `RP1_RTOS_READER_FEATURE=rp1-scmi-cold-observer bash tools/build-rtos-reader.sh /new/output`.
+Check emitted receipts with `python3 -B tools/check-scmi-cold.py UART10.log`;
+run negative checks with `python3 -B tools/check-scmi-cold.py --selftest`.
+Run the existing R1 and checked-readonly validators separately, including trace.
+This does not prove IRQ delivery, Linux SCMI completion, endpoint-reset survival,
+full clock-profile correctness, or external baud accuracy. Mask/pending fields
+are startup/ISR telemetry, not continuously sampled NVIC state. Deployment and
+independent held14 recovery remain separately admitted hardware operations.
+
 This repository contains an AArch64 EL2 bootloader PoC for Raspberry Pi 5 /
 BCM2712 / RP1 bringup.
 
@@ -648,6 +734,27 @@ RP1 PCIe enumeration are useful references but are not required for the first
 PoC goal: reload RP1 firmware, continue using BCM2712 SDHC, then boot Linux.
 
 ## Expected Log Order
+
+### Read-only standard kprobe DT admission (2026-09-27)
+
+The earlier seven-hook `rp1-time-anchor` input DT seal selected SHA256
+`3b89e53c413774e6ec4a9cf398989ab73161b88a1b3d5b68162e746367e655d0`.
+It records standard boot kprobe entry/return arguments without a Linux source
+patch. The prior function-only trace DT remains historical evidence, not an
+accepted input to this build. The default non-anchor raw boot image remains
+byte-identical (`0bcb9cb1ab1f4ff33fd10b00b82057729b945cdef9074b8e51e3e162a0d1aa78`).
+Actual DT-byte and mutation rejection tests are still required by the normal
+builder through `RP1_TIME_ANCHOR_DTB`. This update does not enable config repair
+or grant a host-access exclusion window; hardware acceptance is separate.
+
+The current eleven-hook candidate instead selects
+`c585029db148552f27e9a63dbdf7ab15f580eac29e799104584215f3fe3ef98c`:
+standard probe entry/return, resource0 and ioremap scalar-return hooks add
+physical-controller attribution without guessed structure offsets. The
+earlier seven-hook and function-only DTs remain historical evidence. Only
+this opt-in exact digest changes in boot code; the default seal is unchanged.
+New hardware acceptance and a finite host-access exclusion remain separate
+requirements. No endpoint writer is enabled by this change.
 
 The following order is the same for UART and semihosting backends:
 

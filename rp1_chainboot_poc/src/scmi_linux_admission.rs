@@ -1,0 +1,186 @@
+//! Runtime R1 subset of HAL tools/check-freertos-runtime.py::validate.
+//! External GPIO trace and same-boot Linux IRQ evidence remain separate gates.
+
+const LEGACY_LINUX_DTB_SHA256: [u8; 32] = [
+    0x43, 0x9a, 0xc6, 0x87, 0x4b, 0xf9, 0x70, 0x2f, 0xbe, 0xa1, 0x7d, 0xae, 0x87, 0xd4, 0x72, 0x9b,
+    0x55, 0xe3, 0x7b, 0x4e, 0xec, 0x64, 0xc2, 0x11, 0xee, 0x36, 0x55, 0xa0, 0x4c, 0xb8, 0xe9, 0x59,
+];
+
+/// Same-boot console contract, not a physical frequency measurement. Mirror
+/// standard PL011's rounded quotient for the explicitly selected 115200 baud.
+pub fn console_clock_matches(firmware_hz: u32, linux_hz: u32, ibrd: u32, fbrd: u32) -> bool {
+    firmware_hz != 0 && firmware_hz == linux_hz && (1..=0xffff).contains(&ibrd)
+        && fbrd < 64 && u64::from(ibrd) * 64 + u64::from(fbrd)
+            == (u64::from(linux_hz) * 4 + 57_600) / 115_200
+}
+
+pub fn dtb_envelope_valid(bytes: &[u8], address: usize) -> bool {
+    address & 7 == 0 && bytes.len() >= 40 && bytes[..4] == [0xd0, 0x0d, 0xfe, 0xed]
+        && u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize == bytes.len()
+}
+
+pub struct R1Admission {
+    next: u32,
+    valid: bool,
+    first: [u32; 256],
+    previous: [u32; 256],
+}
+
+impl R1Admission {
+    pub const fn new() -> Self {
+        Self { next: 0, valid: true, first: [0; 256], previous: [0; 256] }
+    }
+
+    pub fn sample(&mut self, number: u32, w: &[u32; 256]) -> bool {
+        self.valid &= number == self.next && number < 31
+            && w[0] == 0x3130_5452 && w[1] == 1 && w[2] != u32::MAX
+            && w[3] == 0 && w[4] == 0 && w[192] != 0x3154_4652;
+        if number >= 3 {
+            self.valid &= w[2] == 5 && w[19..21] == [0x1357_9bdf, 0]
+                && w[28] == 0 && w[29] & 3 == 2 && w[30] & 7 == 0
+                && (0x2000_e000..=0x2000_f000).contains(&w[31])
+                && w[21] & 0x700 == 0 && u64::from(w[22]) + 1 == u64::from(w[5] / 1000)
+                && w[39] == 1 && w[17] > 0 && w[50] > 0
+                && (1..4096).contains(&w[18]) && w[32..39].iter().all(|x| *x > 0)
+                && w[70] == 0 && w[86] == 0 && w[65] == 0 && w[81] == 0
+                && w[66] & 3 == 2 && w[82] & 3 == 2
+                && w[67] != w[83] && w[67] & 7 == 0 && w[83] & 7 == 0
+                && (0x2000_0000..0x2000_e000).contains(&w[67])
+                && (0x2000_0000..0x2000_e000).contains(&w[83]);
+            if number == 3 {
+                self.first = *w;
+            } else {
+                self.valid &= [8, 9, 14, 15, 17, 49, 50, 64, 80].iter().all(|i|
+                    (1..0x8000_0000).contains(&w[*i].wrapping_sub(self.previous[*i])));
+            }
+            self.previous = *w;
+        }
+        self.next += 1;
+        self.valid
+    }
+
+    pub fn complete(&self) -> bool {
+        let ticks = u64::from(self.previous[8].wrapping_sub(self.first[8]));
+        let elapsed = u64::from(self.previous[11].wrapping_sub(self.first[11]));
+        self.valid && self.next == 31 && ticks > 0
+            && 950 * ticks <= elapsed && elapsed <= 1050 * ticks
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(n: u32) -> [u32; 256] {
+        let mut w = [0; 256];
+        w[0] = 0x3130_5452; w[1] = 1; w[2] = 5; w[5] = 100_000_000;
+        w[19] = 0x1357_9bdf; w[22] = 99_999; w[29] = 2; w[31] = 0x2000_e000;
+        w[18] = 416; w[32..40].fill(1);
+        w[66] = 2; w[82] = 2; w[67] = 0x2000_1000; w[83] = 0x2000_2000;
+        for i in [8, 9, 14, 15, 17, 49, 50, 64, 80] { w[i] = (n + 1) * 1000; }
+        w[11] = w[8] * 1000;
+        w
+    }
+
+    fn admitted(records: &[[u32; 256]]) -> bool {
+        let mut gate = R1Admission::new();
+        for (n, w) in records.iter().enumerate() { gate.sample(n as u32, w); }
+        gate.complete()
+    }
+
+    #[test]
+    fn console_clock_contract() {
+        assert!(console_clock_matches(44_236_800, 44_236_800, 24, 0));
+        assert!(console_clock_matches(48_000_000, 48_000_000, 26, 3));
+        for tuple in [(44_236_800,9_216_000,24,0), (44_236_800,44_236_800,5,0),
+                      (0,0,0,0), (44_236_800,44_236_800,24,64),
+                      (44_236_800,44_236_800,0x10000,0)] {
+            assert!(!console_clock_matches(tuple.0,tuple.1,tuple.2,tuple.3));
+        }
+    }
+
+    #[test]
+    fn dtb_bounds() {
+        let mut bytes = [0; 40];
+        bytes[..4].copy_from_slice(&[0xd0, 0x0d, 0xfe, 0xed]);
+        bytes[4..8].copy_from_slice(&40u32.to_be_bytes());
+        assert!(dtb_envelope_valid(&bytes, 0x1000));
+        assert!(!dtb_envelope_valid(&bytes, 0x1001));
+        assert!(!dtb_envelope_valid(&bytes[..39], 0x1000));
+        bytes[7] = 41; assert!(!dtb_envelope_valid(&bytes, 0x1000));
+        bytes[7] = 40; bytes[0] = 0; assert!(!dtb_envelope_valid(&bytes, 0x1000));
+        assert!(!dtb_envelope_valid(&[], 0x1000));
+    }
+
+    #[test]
+    fn positive_and_fail_closed() {
+        let good: Vec<_> = (0..31).map(record).collect();
+        assert!(admitted(&good));
+        assert!(!admitted(&good[..30]));
+        for (word, value) in [(0,0), (1,0), (2,4), (3,1), (4,1), (192,0x3154_4652),
+            (19,0), (20,1), (28,1), (29,0), (30,1), (31,0), (21,0x700), (22,0),
+            (39,0), (17,0), (50,0), (18,4096), (32,0), (70,1), (86,1), (65,1),
+            (81,1), (66,0), (82,0), (67,0), (83,0x2000_1000)] {
+            let mut bad = good.clone(); bad[12][word] = value; assert!(!admitted(&bad), "word={word}");
+        }
+        for word in [8, 9, 14, 15, 17, 49, 50, 64, 80] {
+            let mut bad = good.clone(); bad[12][word] = bad[11][word]; assert!(!admitted(&bad));
+        }
+        for mean in [949, 1051] {
+            let mut bad = good.clone(); bad[30][11] = bad[3][11] + 27_000 * mean;
+            assert!(!admitted(&bad));
+        }
+        let mut gate = R1Admission::new(); assert!(!gate.sample(1, &record(1)));
+    }
+
+    #[test]
+    fn retained_formal_records() {
+        // Optional real records, never a replacement for unchanged host validators.
+        if let Ok(paths) = std::env::var("SCMI_R1_LOGS") {
+            for path in paths.split(':') {
+                let text = std::fs::read_to_string(path).unwrap();
+                let mut records = vec![[0; 256]; 31];
+                let mut rows = 0;
+                for line in text.lines() {
+                    let Some((_, row)) = line.split_once("[RTOS] ") else { continue; };
+                    let parts: Vec<_> = row.split_whitespace().collect();
+                    if parts.len() != 6 { continue; }
+                    let n: usize = parts[0].parse().unwrap();
+                    let offset: usize = parts[1].parse().unwrap();
+                    for i in 0..4 { records[n][offset+i] = u32::from_str_radix(parts[2+i], 16).unwrap(); }
+                    rows += 1;
+                }
+                assert_eq!(rows, 31 * 64); assert!(admitted(&records), "{path}");
+            }
+        }
+    }
+}
+
+// Exact reviewed owner-policy DT input, not a generic hash override. Keep the legacy
+// image's contract when time observation is disabled.
+pub const LINUX_DTB_SHA256: [u8; 32] = if cfg!(feature = "rp1-amp-observation") {
+    [0x66,0x12,0xc3,0xa4,0x80,0xe7,0x31,0xc0,0x0e,0x45,0x74,0x0c,0xe5,0xe4,0x95,0x25,
+     0x6d,0xd2,0x9f,0x29,0xea,0xee,0xde,0x8f,0xf0,0x00,0x95,0xed,0x07,0xbd,0x35,0x26]
+} else if cfg!(feature = "rp1-amp-proc1") {
+    [0x47,0x07,0x6e,0x8c,0x2d,0x16,0x6a,0xf0,0xeb,0x03,0x50,0x26,0x80,0xbe,0xae,0x46,
+     0x6c,0xc3,0xf6,0xc4,0xc1,0x1b,0x50,0xf3,0x2e,0x6d,0xe4,0x68,0x9d,0xec,0xaa,0xc9]
+} else if cfg!(feature = "rp1-amp-service") {
+    [0x38,0x34,0x19,0xc0,0xb5,0x6a,0x58,0x77,0x87,0x06,0xe5,0x2f,0x2a,0x62,0xc6,0xce,
+     0xe3,0x2c,0xb0,0xb8,0x14,0xc5,0x5f,0x65,0x2b,0x0c,0x8e,0x8c,0x64,0x17,0xcb,0xd9]
+} else if cfg!(feature = "rp1-time-anchor") {
+    [0xb2, 0x5a, 0xb7, 0xe9, 0x5b, 0x20, 0x7a, 0x9a, 0xaf, 0x10, 0x6d, 0xc2, 0x03, 0x0f, 0x12, 0x40,
+     0xda, 0xf6, 0xf1, 0xaf, 0x77, 0xd3, 0x7a, 0x84, 0x4e, 0x15, 0x13, 0x57, 0xfd, 0x68, 0xc2, 0x5c]
+} else { LEGACY_LINUX_DTB_SHA256 };
+
+#[test]
+fn supplied_dtb_seal() {
+    if let Ok(path) = std::env::var("SCMI_LINUX_DTB_PATH") {
+        let bytes = std::fs::read(path).unwrap();
+        assert!(dtb_envelope_valid(&bytes, 0x1000));
+        let digest = std::env::var("SCMI_LINUX_DTB_SHA256").unwrap();
+        assert_eq!(digest.len(), 64);
+        let expected: Vec<_> = (0..32).map(|i|
+            u8::from_str_radix(&digest[i*2..i*2+2], 16).unwrap()).collect();
+        assert_eq!(expected.as_slice(), &LINUX_DTB_SHA256);
+    }
+}

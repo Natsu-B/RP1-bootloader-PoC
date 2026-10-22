@@ -19,6 +19,9 @@ use crate::placement;
 use crate::rp1_dtb_policy::Rp1DtbPolicy;
 
 const TFTP_LOCAL_MAC: MacAddr = MacAddr([0x2c, 0xcf, 0x67, 0xc2, 0x9a, 0x58]);
+#[cfg(any(feature = "rp1-linux-observe-failure", feature = "rp1-scmi-linux-preloaded"))]
+const TFTP_KERNEL_FILENAME: &str = "linux_2712.img";
+#[cfg(not(any(feature = "rp1-linux-observe-failure", feature = "rp1-scmi-linux-preloaded")))]
 const TFTP_KERNEL_FILENAME: &str = "BCM2712.img";
 const TFTP_RP1_ELF_FILENAME: &str = "RP1.elf";
 const TFTP_RP1_CONFIG_FILENAME: &str = "config_rp1.txt";
@@ -83,6 +86,83 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
     let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
     let mut ports = TftpSessionPorts::new();
 
+    if cfg!(any(feature = "rp1-linux-observe-failure", feature = "rp1-scmi-linux-preloaded")) && !skip_rp1_reload {
+        let gem = init_tftp_gem(dtb)?;
+        let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
+            crate::logln!("[DHCP] failed: {:?}", err);
+            map_dhcp_error(err)
+        })?;
+        let (kernel_base, image) =
+            download_kernel_image_from_tftp(&mut *gem, &clock, &lease, &mut ports)?;
+        #[cfg(feature = "tftp-initramfs")]
+        let initramfs_len = download_initramfs(&mut *gem, &clock, &lease, &mut ports)?;
+        #[cfg(not(feature = "tftp-initramfs"))]
+        let initramfs_len = 0;
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        if initramfs_len == 0 {
+            crate::logln!("[SCMILINUX] failure=empty-initramfs");
+            return Err(BootError::Rp1ImageInvalid);
+        }
+        let initrd_start = if initramfs_len == 0 {
+            0
+        } else {
+            placement::INITRAMFS_LOAD_BASE
+        };
+        let initrd_end = initrd_start
+            .checked_add(initramfs_len)
+            .ok_or(BootError::AddressOverflow)?;
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        let linux_dtb_bytes = download_tftp_required(
+            &mut *gem, &clock, &lease, "scmi_linux.dtb", placement::DTB_MAX_SIZE, &mut ports,
+        )?;
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        let mut linux_dtb_storage = vec![0u64; linux_dtb_bytes.len().div_ceil(8)];
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        let linux_dtb = {
+            let digest = crate::hash::sha256_bytes(&linux_dtb_bytes);
+            crate::hash::log_sha256_len("linux.input.dtb", &digest, linux_dtb_bytes.len());
+            let address = linux_dtb_storage.as_mut_ptr() as usize;
+            if digest != crate::scmi_linux_admission::LINUX_DTB_SHA256
+                || !crate::scmi_linux_admission::dtb_envelope_valid(&linux_dtb_bytes, address) {
+                crate::logln!("[SCMILINUX] failure=sealed-linux-dtb");
+                return Err(BootError::DtbPatch);
+            }
+            // Vec<u8> downloads need not be aligned; the u64 backing is. Its
+            // allocated byte length is rounded up and both Vecs outlive handoff.
+            unsafe { core::ptr::copy_nonoverlapping(linux_dtb_bytes.as_ptr(), address as *mut u8, linux_dtb_bytes.len()); }
+            dtb::DtbParser::init(address).map_err(|_| BootError::DtbPatch)?
+        };
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        let handoff_dtb = &linux_dtb;
+        #[cfg(not(feature = "rp1-scmi-linux-preloaded"))]
+        let handoff_dtb = dtb;
+        #[cfg(feature = "rp1-scmi-linux-preloaded")]
+        {
+            dtb_patch::validate_firmware_board(dtb, handoff_dtb)?;
+            let firmware_hz = console_clock_hz(dtb)?;
+            let linux_hz = console_clock_hz(handoff_dtb)?;
+            let (ibrd, fbrd) = crate::uart::baud_divisors();
+            crate::logln!("[SCMILINUX] uart10 firmware_hz={} linux_hz={} ibrd={} fbrd={}",
+                          firmware_hz, linux_hz, ibrd, fbrd);
+            if !crate::scmi_linux_admission::console_clock_matches(firmware_hz, linux_hz, ibrd, fbrd) {
+                crate::logln!("[SCMILINUX] failure=uart10-clock-contract");
+                return Err(BootError::DtbPatch);
+            }
+        }
+        // The firmware tree remains authoritative for transport/bootstrap. The
+        // downloaded Vec stays alive through the terminal handoff below.
+        let rp1_policy =
+            download_rp1_policy_and_reload_if_needed(dtb, &mut *gem, &clock, &lease, &mut ports)?;
+        return handoff_preloaded_kernel(
+            handoff_dtb,
+            kernel_base,
+            image,
+            initrd_start,
+            initrd_end,
+            rp1_policy,
+        );
+    }
+
     if skip_rp1_reload {
         let gem = init_tftp_gem(dtb)?;
         let lease = dhcp_boot::dhcp_acquire(&mut *gem, &clock).map_err(|err| {
@@ -112,6 +192,27 @@ pub fn boot_from_tftp_with_dhcp(dtb: &dtb::DtbParser) -> Result<(), BootError> {
     boot_kernel_from_tftp_with_lease(dtb, &mut *gem, &clock, &lease, rp1_policy, &mut ports)
 }
 
+#[cfg(feature = "rp1-scmi-linux-preloaded")]
+fn console_clock_hz(parser: &dtb::DtbParser) -> Result<u32, BootError> {
+    use dtb::{DeviceTree, DeviceTreeQueryExt, NodeQueryExt};
+    let tree = DeviceTree::from_parser(parser).map_err(|_| BootError::DtbPatch)?;
+    let provider = tree.find_node_by_path("/clocks/clk-uart")
+        .and_then(|id| tree.node(id)).ok_or(BootError::DtbPatch)?;
+    let uart = tree.find_node_by_path("/soc@107c000000/serial@7d001000")
+        .and_then(|id| tree.node(id)).ok_or(BootError::DtbPatch)?;
+    let rate = provider.property("clock-frequency").ok_or(BootError::DtbPatch)?;
+    let phandle = provider.property("phandle").ok_or(BootError::DtbPatch)?;
+    let clocks = uart.property("clocks").ok_or(BootError::DtbPatch)?;
+    if provider.property("compatible").map(|p| p.value.as_slice()) != Some(b"fixed-clock\0".as_slice())
+        || provider.property("#clock-cells").map(|p| p.value.as_slice()) != Some(&[0,0,0,0])
+        || clocks.value.as_slice().len() != 8
+        || phandle.value.as_slice().len() != 4
+        || clocks.value.as_slice()[..4] != *phandle.value.as_slice() {
+        return Err(BootError::DtbPatch);
+    }
+    Ok(u32::from_be_bytes(rate.value.as_slice().try_into().map_err(|_| BootError::DtbPatch)?))
+}
+
 fn download_rp1_policy_and_reload_if_needed(
     dtb: &dtb::DtbParser,
     gem: &mut Rp1Gem,
@@ -126,13 +227,7 @@ fn download_rp1_policy_and_reload_if_needed(
         return Ok(None);
     }
 
-    let policy = boot_rp1_from_tftp(dtb, gem, clock, lease, ports)?;
-    // SAFETY: the pre-reload GEM is not used after this point. The full reload
-    // path leaves this scope and obtains a fresh singleton instance before any
-    // further network I/O.
-    unsafe { gem.release_after_quiesce() };
-    crate::logln!("[TFTP] dropping pre-reload GEM state");
-    Ok(Some(policy))
+    boot_rp1_from_tftp(dtb, gem, clock, lease, ports).map(Some)
 }
 
 fn boot_kernel_from_tftp_with_lease(
@@ -165,30 +260,7 @@ fn boot_kernel_from_tftp_with_lease(
     );
     let skip_rp1_reload = cfg!(feature = "skip-rp1-reload");
 
-    let kernel_cfg = tftp_config(lease, TFTP_KERNEL_FILENAME, ports.alloc());
-    crate::logln!(
-        "[TFTP] rrq file={} local_port={}",
-        TFTP_KERNEL_FILENAME,
-        kernel_cfg.local_port
-    );
-    crate::logln!("[TFTP] kernel download start {}", TFTP_KERNEL_FILENAME);
-    let mut kernel_staging = vec![0u8; TFTP_KERNEL_STAGING_MAX];
-    let kernel_len = match tftp::download_into(gem, clock, &kernel_cfg, &mut kernel_staging) {
-        Ok(len) => len,
-        Err(err) => return gem_failure(gem, lease, "kernel download", err),
-    };
-    crate::logln!(
-        "[TFTP] kernel download complete addr=0x{:x} len={}",
-        placement::KERNEL_LOAD_BASE,
-        kernel_len
-    );
-    let kernel = crate::gzip::decompress_kernel_if_needed(
-        &kernel_staging[..kernel_len],
-        placement::KERNEL_LOAD_BASE,
-        placement::KERNEL_MAX_SIZE,
-    )?;
-    drop(kernel_staging);
-    let image = linux::validate_arm64_image(kernel.base, kernel.len, placement::KERNEL_MAX_SIZE)?;
+    let (kernel_base, image) = download_kernel_image_from_tftp(gem, clock, lease, ports)?;
 
     #[cfg(feature = "tftp-initramfs")]
     let initramfs_len = download_initramfs(gem, clock, lease, ports)?;
@@ -211,6 +283,94 @@ fn boot_kernel_from_tftp_with_lease(
         crate::logln!("[RP1BOOT] skipped by feature skip-rp1-reload");
     }
 
+    handoff_kernel_common(dtb, &image, initrd_start, initrd_end, rp1_policy.as_ref())?;
+
+    // SAFETY: this is the terminal Linux handoff path. The GEM reference is
+    // not used after release; Linux will probe and own the device next.
+    let ncr = unsafe { gem.release_after_linux_handoff() }.map_err(|err| {
+        crate::logln!("[TFTP] Rp1Gem Linux handoff refused: {:?}", err);
+        BootError::Rp1Gem
+    })?;
+    crate::logln!(
+        "[TFTP] Rp1Gem Linux handoff cleanup complete ncr=0x{:08x}", ncr
+    );
+    #[cfg(feature = "rp1-linux-observe-failure")]
+    crate::log_rp1_pcie_raw_diag("pre-linux-handoff");
+    linux::clean_dcache_poc(kernel_base, image.image_size);
+    linux::clean_dcache_poc(initrd_start, initramfs_len);
+    linux::invalidate_icache_all();
+
+    // SAFETY: all downloaded artifacts were bounded, kernel header validated,
+    // DTB was patched into its reserved range, GEM was released for Linux, and
+    // cache maintenance completed before the terminal EL2 handoff.
+    unsafe { linux::jump_to_linux_el2(image.entry, placement::DTB_COPY_BASE) }
+}
+
+fn download_kernel_image_from_tftp(
+    gem: &mut Rp1Gem,
+    clock: &TimerClock,
+    lease: &NetworkBootLease,
+    ports: &mut TftpSessionPorts,
+) -> Result<(usize, linux::LinuxImage), BootError> {
+    let kernel_cfg = tftp_config(lease, TFTP_KERNEL_FILENAME, ports.alloc());
+    crate::logln!(
+        "[TFTP] rrq file={} local_port={}",
+        TFTP_KERNEL_FILENAME,
+        kernel_cfg.local_port
+    );
+    crate::logln!("[TFTP] kernel download start {}", TFTP_KERNEL_FILENAME);
+    let mut kernel_staging = vec![0u8; TFTP_KERNEL_STAGING_MAX];
+    let kernel_len = match tftp::download_into(gem, clock, &kernel_cfg, &mut kernel_staging) {
+        Ok(len) => len,
+        Err(err) => return gem_failure(gem, lease, "kernel download", err),
+    };
+    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+    crate::hash::log_sha256_len("linux.download.file", &crate::hash::sha256_bytes(&kernel_staging[..kernel_len]), kernel_len);
+    crate::logln!(
+        "[TFTP] kernel download complete addr=0x{:x} len={}",
+        placement::KERNEL_LOAD_BASE,
+        kernel_len
+    );
+    let kernel = crate::gzip::decompress_kernel_if_needed(
+        &kernel_staging[..kernel_len],
+        placement::KERNEL_LOAD_BASE,
+        placement::KERNEL_MAX_SIZE,
+    )?;
+    drop(kernel_staging);
+    let image = linux::validate_arm64_image(kernel.base, kernel.len, placement::KERNEL_MAX_SIZE)?;
+    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+    {
+        let bytes = unsafe { core::slice::from_raw_parts(kernel.base as *const u8, kernel.len) };
+        crate::hash::log_sha256_len("linux.preloaded.image", &crate::hash::sha256_bytes(bytes), bytes.len());
+    }
+    Ok((kernel.base, image))
+}
+
+fn handoff_preloaded_kernel(
+    dtb: &dtb::DtbParser,
+    kernel_base: usize,
+    image: linux::LinuxImage,
+    initrd_start: usize,
+    initrd_end: usize,
+    rp1_policy: Option<Rp1DtbPolicy>,
+) -> Result<(), BootError> {
+    crate::logln!("[TFTP] using preloaded Linux kernel for handoff");
+    handoff_kernel_common(dtb, &image, initrd_start, initrd_end, rp1_policy.as_ref())?;
+    linux::clean_dcache_poc(kernel_base, image.image_size);
+    linux::clean_dcache_poc(initrd_start, initrd_end - initrd_start);
+    linux::invalidate_icache_all();
+
+    // SAFETY: terminal EL2 handoff to a prevalidated kernel image.
+    unsafe { linux::jump_to_linux_el2(image.entry, placement::DTB_COPY_BASE) }
+}
+
+fn handoff_kernel_common(
+    dtb: &dtb::DtbParser,
+    image: &linux::LinuxImage,
+    initrd_start: usize,
+    initrd_end: usize,
+    rp1_policy: Option<&Rp1DtbPolicy>,
+) -> Result<(), BootError> {
     let patched_dtb = dtb_patch::patch_dtb_for_linux(
         dtb,
         placement::DTB_COPY_BASE,
@@ -218,7 +378,7 @@ fn boot_kernel_from_tftp_with_lease(
         initrd_start,
         initrd_end,
         None,
-        rp1_policy.as_ref(),
+        rp1_policy,
     )?;
     let regs = linux::read_el2_debug_regs();
     crate::logln!(
@@ -240,20 +400,17 @@ fn boot_kernel_from_tftp_with_lease(
         regs.cntvoff_el2,
         regs.cptr_el2
     );
-
-    // SAFETY: this is the terminal Linux handoff path. The GEM reference is
-    // not used after release; Linux will probe and own the device next.
-    unsafe { gem.release_after_linux_handoff() };
-    crate::logln!("[TFTP] Rp1Gem Linux handoff cleanup complete");
-    linux::clean_dcache_poc(kernel.base, image.image_size);
-    linux::clean_dcache_poc(initrd_start, initramfs_len);
     linux::clean_dcache_poc(patched_dtb.addr, patched_dtb.len);
-    linux::invalidate_icache_all();
-
-    // SAFETY: all downloaded artifacts were bounded, kernel header validated,
-    // DTB was patched into its reserved range, GEM was released for Linux, and
-    // cache maintenance completed before the terminal EL2 handoff.
-    unsafe { linux::jump_to_linux_el2(image.entry, patched_dtb.addr) }
+    if patched_dtb.addr != placement::DTB_COPY_BASE {
+        return Err(BootError::AddressOverflow);
+    }
+    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+    {
+        // The exact serialized handoff tree, including firmware and owner edits.
+        let bytes = unsafe { core::slice::from_raw_parts(patched_dtb.addr as *const u8, patched_dtb.len) };
+        crate::hash::log_sha256_len("linux.handoff.dtb", &crate::hash::sha256_bytes(bytes), bytes.len());
+    }
+    Ok(())
 }
 
 fn map_dhcp_error(err: DhcpError) -> BootError {
@@ -263,6 +420,58 @@ fn map_dhcp_error(err: DhcpError) -> BootError {
         DhcpError::NoTftpServer => BootError::DhcpNoTftpServer,
         DhcpError::Encode | DhcpError::Transmit => BootError::Dhcp,
     }
+}
+
+#[cfg(feature = "rp1-linux-observe-failure")]
+fn log_rp1_gem_dependencies(
+    rp1: &bcm2712::Rp1Config,
+    label: &'static str,
+) -> Result<(), BootError> {
+    const LAST_OFFSET: u64 = 0x104014;
+
+    let (peripheral_base, peripheral_size) = rp1.peripheral_addr.ok_or(BootError::Rp1Pcie)?;
+    let end = LAST_OFFSET
+        .checked_add(core::mem::size_of::<u32>() as u64)
+        .ok_or(BootError::AddressOverflow)?;
+    if end > peripheral_size {
+        return Err(BootError::AddressOverflow);
+    }
+    let peripheral_base =
+        usize::try_from(peripheral_base).map_err(|_| BootError::AddressOverflow)?;
+    let read = |offset: usize| -> Result<u32, BootError> {
+        let addr = peripheral_base
+            .checked_add(offset)
+            .ok_or(BootError::AddressOverflow)?;
+        // SAFETY: the BAR range and address arithmetic are checked above; all
+        // requested register offsets are aligned 32-bit MMIO locations.
+        Ok(unsafe { core::ptr::read_volatile(addr as *const u32) })
+    };
+    let label = if label.is_empty() { "initial" } else { label };
+
+    crate::logln!(
+        "[RP1GEMDEP] {} gem_mid={:08x} gem_cfg={:08x}/{:08x}/{:08x} reset={:08x}/{:08x}",
+        label,
+        read(0x1000fc)?,
+        read(0x104000)?,
+        read(0x104004)?,
+        read(0x104014)?,
+        read(0x14000)?,
+        read(0x14018)?,
+    );
+    crate::logln!(
+        "[RP1GEMDEP] {} clk_sys={:08x}/{:08x}/{:08x} clk_eth={:08x}/{:08x}/{:08x} clk_eth_tsu={:08x}/{:08x}/{:08x}",
+        label,
+        read(0x18014)?,
+        read(0x18018)?,
+        read(0x18020)?,
+        read(0x18064)?,
+        read(0x18068)?,
+        read(0x18070)?,
+        read(0x18134)?,
+        read(0x18138)?,
+        read(0x18140)?,
+    );
+    Ok(())
 }
 
 fn init_tftp_gem_with_label(
@@ -289,6 +498,8 @@ fn init_tftp_gem_with_label(
     } else {
         crate::logln!("[TFTP] {} RP1 PCIe init ok", label);
     }
+    #[cfg(feature = "rp1-linux-observe-failure")]
+    log_rp1_gem_dependencies(&rp1, label)?;
 
     let gem = Rp1Gem::init_from_rp1_config(&rp1, TFTP_LOCAL_MAC, Rp1GemOptions::default())
         .map_err(|err| {
@@ -345,14 +556,15 @@ fn boot_rp1_from_tftp(
     lease: &NetworkBootLease,
     ports: &mut TftpSessionPorts,
 ) -> Result<Rp1DtbPolicy, BootError> {
-    let (rp1_elf, policy) = load_rp1_elf_and_policy_from_tftp(gem, clock, lease, ports)?;
+    let (rp1_elf, policy, config) = load_rp1_elf_and_policy_from_tftp(gem, clock, lease, ports)?;
 
     let scratch = placement::rp1_scratch_slice();
-    let image = crate::rp1_image::build_from_rp1_elf(
+    let mut image = crate::rp1_image::build_from_rp1_elf(
         &rp1_elf,
         scratch,
         crate::rp1_image::RP1_FALLBACK_STACK,
     )?;
+    crate::apply_rp1_elf_start_contract(&mut image, &config)?;
     crate::logln!(
         "[RP1ELF] load_base=0x{:x} image_len={} entry=0x{:x} stack=0x{:x}",
         image.load_addr,
@@ -360,11 +572,59 @@ fn boot_rp1_from_tftp(
         image.entry,
         image.stack
     );
+    crate::log_rp1_elf_materialized(&image);
 
-    gem.quiesce();
-    crate::logln!("[TFTP] Rp1Gem quiesce before RP1 reload complete");
+    #[cfg(feature = "rp1-gdb-debug-stub")]
+    let debug_sram = rp1_gdb_shared_sram(dtb)?;
+
+    // SAFETY: all downloads are complete and no caller uses the pre-reload GEM
+    // after this point. Release before RP1 reset so no stale GEM MMIO follows it.
+    let ncr = unsafe { gem.release_after_quiesce() }.map_err(|err| {
+        crate::logln!("[TFTP] Rp1Gem stop failed; RP1 reload refused: {:?}", err);
+        BootError::Rp1Gem
+    })?;
+    crate::logln!(
+        "[TFTP] Rp1Gem release before RP1 reload complete ncr=0x{:08x}", ncr
+    );
+    #[cfg(feature = "rp1-gdb-debug-stub")]
+    crate::start_rp1_image_with_debug_sram(dtb, &image, Some(debug_sram))?;
+    #[cfg(not(feature = "rp1-gdb-debug-stub"))]
     crate::start_rp1_image(dtb, &image)?;
     Ok(policy)
+}
+
+#[cfg(feature = "rp1-gdb-debug-stub")]
+fn rp1_gdb_shared_sram(dtb: &dtb::DtbParser) -> Result<(usize, usize), BootError> {
+    let rp1 = bcm2712::init_rp1_with_options(
+        dtb,
+        bcm2712::Rp1InitOptions {
+            mode: bcm2712::Rp1InitMode::Auto,
+            strict: false,
+        },
+    )
+    .map_err(|err| {
+        crate::logln!("[RP1GDB] pre-reload RP1 PCIe init failed: {:?}", err);
+        BootError::Rp1Pcie
+    })?;
+    crate::logln!("[RP1PCIE:pre-rp1-reload] diagnostics begin");
+    bcm2712::dump_rp1_pcie_diagnostics(&rp1);
+    let Some((sram_base, sram_size)) = rp1.shared_sram_addr else {
+        crate::logln!("[RP1GDB] pre-reload shared SRAM BAR missing");
+        return Err(BootError::Rp1Pcie);
+    };
+    let sram_base = usize::try_from(sram_base).map_err(|_| BootError::Rp1Pcie)?;
+    let sram_size = usize::try_from(sram_size).map_err(|_| BootError::Rp1Pcie)?;
+    crate::logln!(
+        "[RP1GDB] pre-reload shared SRAM BAR cpu=0x{:x} size=0x{:x}",
+        sram_base,
+        sram_size
+    );
+    crate::logln!(
+        "[RP1PCIE:pre-rp1-reload] bar2_cpu=0x{:x} size=0x{:x}",
+        sram_base,
+        sram_size
+    );
+    Ok((sram_base, sram_size))
 }
 
 fn load_rp1_policy_from_tftp(
@@ -373,7 +633,7 @@ fn load_rp1_policy_from_tftp(
     lease: &NetworkBootLease,
     ports: &mut TftpSessionPorts,
 ) -> Result<Rp1DtbPolicy, BootError> {
-    let (_rp1_elf, policy) = load_rp1_elf_and_policy_from_tftp(gem, clock, lease, ports)?;
+    let (_rp1_elf, policy, _config) = load_rp1_elf_and_policy_from_tftp(gem, clock, lease, ports)?;
     Ok(policy)
 }
 
@@ -382,7 +642,7 @@ fn load_rp1_elf_and_policy_from_tftp(
     clock: &TimerClock,
     lease: &NetworkBootLease,
     ports: &mut TftpSessionPorts,
-) -> Result<(Vec<u8>, Rp1DtbPolicy), BootError> {
+) -> Result<(Vec<u8>, Rp1DtbPolicy, crate::rp1_config::Rp1Config), BootError> {
     crate::logln!("[TFTP] RP1 ELF download start {}", TFTP_RP1_ELF_FILENAME);
     let rp1_elf = download_tftp_required(
         gem,
@@ -393,7 +653,7 @@ fn load_rp1_elf_and_policy_from_tftp(
         ports,
     )?;
     crate::logln!("[TFTP] RP1 ELF download complete len={}", rp1_elf.len());
-
+    crate::log_rp1_elf_file_selection("/RP1.elf", &rp1_elf)?;
     let config = download_tftp_optional(
         gem,
         clock,
@@ -402,10 +662,12 @@ fn load_rp1_elf_and_policy_from_tftp(
         TFTP_RP1_CONFIG_STAGING_MAX,
         ports,
     )?;
+    let parsed_config = crate::rp1_config::parse_optional_config(config.as_deref())
+        .map_err(|_| BootError::Rp1ConfigInvalid)?;
     let policy = crate::enforce_rp1_elf_note_policy_with_config(&rp1_elf, config.as_deref())?;
     flush_tftp_transfer(gem, clock, lease, ports)?;
     drain_rx(gem, clock, 200_000);
-    Ok((rp1_elf, policy))
+    Ok((rp1_elf, policy, parsed_config))
 }
 
 #[cfg(feature = "tftp-initramfs")]
@@ -442,6 +704,11 @@ fn download_initramfs(
         placement::INITRAMFS_LOAD_BASE,
         len
     );
+    #[cfg(feature = "rp1-scmi-linux-preloaded")]
+    {
+        let bytes = unsafe { core::slice::from_raw_parts(placement::INITRAMFS_LOAD_BASE as *const u8, len) };
+        crate::hash::log_sha256_len("linux.preloaded.initramfs", &crate::hash::sha256_bytes(bytes), len);
+    }
     Ok(len)
 }
 
@@ -558,7 +825,18 @@ fn gem_failure<T>(
     stage: &'static str,
     err: tftp::TftpError,
 ) -> Result<T, BootError> {
-    crate::logln!("[TFTP] {} failed: {:?}", stage, err);
+    match err {
+        tftp::TftpError::TransferTimeout {
+            expected_block,
+            written,
+        } => crate::logln!(
+            "[TFTP] {} timeout expected_block={} written={}",
+            stage,
+            expected_block,
+            written
+        ),
+        _ => crate::logln!("[TFTP] {} failed: {:?}", stage, err),
+    }
     crate::logln!(
         "[TFTP] lease client={}.{}.{}.{} server={}.{}.{}.{} source={}",
         lease.client_ip[0],

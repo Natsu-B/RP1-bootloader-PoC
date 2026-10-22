@@ -8,6 +8,37 @@ use dtb::{
 use crate::BootError;
 use crate::rp1_dtb_policy::{RP1_DEVICE_DTB_NODES, Rp1DtbPolicy};
 
+/// A separately supplied Linux policy must retain same-boot board fixups.
+/// This read-only admission is deliberately independent of RP1 ownership.
+pub fn validate_firmware_board(
+    firmware: &dtb::DtbParser,
+    candidate: &dtb::DtbParser,
+) -> Result<(), BootError> {
+    use dtb::NodeQueryExt;
+    let original = DeviceTree::from_parser(firmware).map_err(|_| BootError::DtbPatch)?;
+    let linux = DeviceTree::from_parser(candidate).map_err(|_| BootError::DtbPatch)?;
+    for (path, props) in [
+        ("/memory@0", &["reg"][..]),
+        ("/soc@107c000000/pinctrl@7d504100", &["compatible", "reg"][..]),
+        ("/soc@107c000000/pinctrl@7d510700", &["compatible", "reg"][..]),
+        ("/soc@107c000000/serial@7d001000", &["compatible", "reg", "interrupts"][..]),
+    ] {
+        let before = original.find_node_by_path(path).and_then(|id| original.node(id))
+            .ok_or(BootError::DtbPatch)?;
+        let after = linux.find_node_by_path(path).and_then(|id| linux.node(id))
+            .ok_or(BootError::DtbPatch)?;
+        for property in props {
+            let value = before.property(property).ok_or(BootError::DtbPatch)?;
+            if after.property(property).map(|p| p.value.as_slice()) != Some(value.value.as_slice()) {
+                crate::logln!("[SCMILINUX] failure=board-dtb path={} property={}", path, property);
+                return Err(BootError::DtbPatch);
+            }
+        }
+    }
+    crate::logln!("[SCMILINUX] board-dtb memory-pinctrl-uart10=match");
+    Ok(())
+}
+
 pub struct PatchedDtb {
     pub addr: usize,
     pub len: usize,

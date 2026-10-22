@@ -2,6 +2,10 @@ use crate::BootError;
 use crate::bcm2712_aon::Rp1RunPin;
 use crate::rp1_image::Rp1Image;
 
+#[cfg(feature = "rp1-gdb-debug-stub")]
+#[path = "rp1_debug_stub.rs"]
+pub(crate) mod rp1_debug_stub;
+
 pub const RP1_I2C_ADDR: u8 = 0x43;
 pub const RP1_CHUNK_SIZE: usize = 0x40;
 pub const RP1_BOOT_MAGIC: u32 = 0xb007_c0de;
@@ -143,6 +147,12 @@ where
 
     pub fn program_scratch(&mut self, entry: u32, stack: u32) -> Result<(), BootError> {
         let entry = entry | 1;
+        crate::logln!("[RP1BOOT] scratch[0x4015400c]=0x{:08x}", RP1_BOOT_MAGIC);
+        crate::logln!(
+            "[RP1BOOT] scratch[0x40154010]=0x{:08x}",
+            entry ^ RP1_BOOT_MAGIC
+        );
+        crate::logln!("[RP1BOOT] scratch[0x40154018]=0x{:08x}", stack);
         self.write32(RP1_SCRATCH_MAGIC, RP1_BOOT_MAGIC)?;
         self.write32(RP1_SCRATCH_ENTRY, entry ^ RP1_BOOT_MAGIC)?;
         self.write32(RP1_SCRATCH_STACK, stack)?;
@@ -150,6 +160,8 @@ where
     }
 
     pub fn start(&mut self) -> Result<(), BootError> {
+        crate::logln!("[RP1BOOT] scratch[0x40010008]=0x00000100");
+        crate::logln!("[RP1BOOT] scratch[0x40154000]=0x80000000");
         self.write32(RP1_BOOT_CTRL_A, 0x100)?;
         self.write32(RP1_BOOT_COMMAND, 0x8000_0000)?;
         Ok(())
@@ -162,6 +174,7 @@ where
         crate::logln!("[RP1BOOT] scratch programmed");
         self.start()?;
         crate::logln!("[RP1BOOT] proc0 started");
+
         Ok(())
     }
 }

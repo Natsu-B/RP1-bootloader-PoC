@@ -12,24 +12,67 @@ skip-rp1-reload = []
 continue-on-rp1-bootstrap-failure = []
 tftp-boot = []
 tftp-initramfs = ["tftp-boot"]
+rp1-gdb-debug-stub = ["log-uart"]
+rp1-spi-peer-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-spi-rearm-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-spi-fifo-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-spi-varied-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-spi-retained-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-spi-overflow-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-spi-deadline-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-i2c-readonly-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-i2c-stop-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-i2c-read1-final-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-rtos-record = ["rp1-gdb-debug-stub", "tftp-boot"]
+rp1-scmi-cold-observer = ["rp1-rtos-record"]
+rp1-scmi-linux-preloaded = ["rp1-rtos-record", "tftp-initramfs"]
+rp1-time-anchor = ["rp1-scmi-linux-preloaded"]
+rp1-amp-service = ["rp1-time-anchor"]
+rp1-amp-proc1 = ["rp1-amp-service"]
+rp1-amp-observation = ["rp1-amp-proc1"]
+rp1-amp-proc1-profile = ["rp1-amp-observation"]
+# Diagnostic: profiler firmware whose C1 stack is in proc-local DSRAM.
+rp1-amp-proc1-local-stack = ["rp1-amp-proc1-profile"]
+# Diagnostic: DSRAM stack with the per-iteration profiler hooks compiled out.
+rp1-amp-proc1-no-hooks = ["rp1-amp-proc1-local-stack"]
+rp1-rtos-watchdog-receipt = ["rp1-rtos-record"]
+rp1-rtos-watchdog-quiescence = ["rp1-rtos-watchdog-receipt"]
+rp1-rtos-soak = ["rp1-rtos-record"]
+rp1-rtos-mixed-repeat = ["rp1-rtos-soak"]
+rp1-clock-independence-proof = ["rp1-gdb-debug-stub"]
+rp1-inbound-monitor-block-proof = ["rp1-gdb-debug-stub"]
+rp1-axishim-focused-sampling-proof = ["rp1-inbound-monitor-block-proof"]
+rp1-bar1-4k-protection-proof = ["rp1-inbound-monitor-block-proof"]
+rp1-bar1-64k-hole-proof = ["rp1-bar1-4k-protection-proof"]
+rp1-iatu-second-spare-programming-proof = ["rp1-inbound-monitor-block-proof"]
+rp1-iatu-64k-address-mask-characterization = ["rp1-iatu-second-spare-programming-proof"]
+rp1-bar1-interior-64k-hole-proof = ["rp1-bar1-4k-protection-proof"]
+rp1-bar1-hole-write-effect-proof = ["rp1-bar1-interior-64k-hole-proof"]
+rp1-bar1-second-interior-64k-page-proof = ["rp1-bar1-interior-64k-hole-proof"]
+rp1-boot-rom-dump = ["rp1-gdb-debug-stub"]
+rp1-linux-observe-failure = ["rp1-gdb-debug-stub"]
+rp1-gpio22-start-proof = []
+rp1-stock-spi0-wrapper-readonly = ["tftp-boot", "log-uart"]
+rp1-allow-local-dsram-vector-stack = []
 log-uart = []
 log-semihosting = []
 
 [dependencies]
-arch_hal = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "arch_hal" }
-dtb = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "dtb" }
-file = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "file" }
-filesystem = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "filesystem" }
-block-device-api = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "block-device-api" }
-allocator = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "allocator", features = ["no-alloc-error-handler"] }
-mutex = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "mutex" }
-arch_timer = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "timer" }
-io-api = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "io-api" }
-net = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "net" }
-elf = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "57268938387fc02bf90d0b8998773ba1459d8bc5", package = "elf" }
+arch_hal = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "arch_hal" }
+dtb = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "dtb" }
+file = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "file" }
+filesystem = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "filesystem" }
+block-device-api = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "block-device-api" }
+allocator = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "allocator", features = ["no-alloc-error-handler"] }
+mutex = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "mutex" }
+arch_timer = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "timer" }
+io-api = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "io-api" }
+net = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "net" }
+elf = { git = "https://github.com/Natsu-B/aarch64_type1_hypervisor.git", rev = "6868db72b674e9d45a51ce5909260f4c2f148c38", package = "elf" }
 
 embedded-hal = { version = "1", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false, features = ["alloc"] }
 miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 crc32fast = { version = "1", default-features = false }
-rp1-abi = { git = "https://github.com/Natsu-B/RP1-hal.git", rev = "4026fdc478e932fdbd4a0520ef4c364871acbaea", package = "rp1-abi" }
+sha2 = { version = "0.11", default-features = false }
+rp1-abi = { git = "https://github.com/Natsu-B/RP1-hal.git", branch = "codex/feat-rp1-debug-stub", package = "rp1-abi" }
