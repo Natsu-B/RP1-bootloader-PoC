@@ -4,9 +4,9 @@ repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $# == 1 && "$1" == /* && ! -e "$1" ]] || { echo 'usage: build-rtos-reader.sh /new/output' >&2; exit 2; }
 out=$1
 feature=${RP1_RTOS_READER_FEATURE:-rp1-rtos-record}
-case "$feature" in rp1-amp-proc1-local-stack|rp1-amp-proc1-profile|rp1-amp-observation|rp1-amp-proc1|rp1-amp-service|rp1-time-anchor|rp1-scmi-linux-preloaded|rp1-scmi-cold-observer|rp1-rtos-watchdog-quiescence|rp1-rtos-watchdog-receipt|rp1-rtos-record|rp1-rtos-soak|rp1-rtos-mixed-repeat) ;; *) exit 2 ;; esac
+case "$feature" in rp1-amp-proc1-no-hooks|rp1-amp-proc1-local-stack|rp1-amp-proc1-profile|rp1-amp-observation|rp1-amp-proc1|rp1-amp-service|rp1-time-anchor|rp1-scmi-linux-preloaded|rp1-scmi-cold-observer|rp1-rtos-watchdog-quiescence|rp1-rtos-watchdog-receipt|rp1-rtos-record|rp1-rtos-soak|rp1-rtos-mixed-repeat) ;; *) exit 2 ;; esac
 family=$feature
-if [[ "$feature" == rp1-amp-proc1-profile || "$feature" == rp1-amp-proc1-local-stack ]]; then family=rp1-amp-observation; fi
+if [[ "$feature" == rp1-amp-proc1-profile || "$feature" == rp1-amp-proc1-local-stack || "$feature" == rp1-amp-proc1-no-hooks ]]; then family=rp1-amp-observation; fi
 mkdir -p "$out"
 exec > "$out/build.txt" 2>&1
 cd "$repo"
@@ -24,15 +24,16 @@ if [[ "$family" == rp1-time-anchor || "$family" == rp1-amp-service || "$family" 
         admission_args+=(--amp-service --firmware "$RP1_AMP_SERVICE_ELF")
         if [[ "$family" == rp1-amp-proc1 || "$family" == rp1-amp-observation ]]; then admission_args+=(--amp-proc1); fi
         if [[ "$family" == rp1-amp-observation ]]; then admission_args+=(--amp-observation); fi
-        if [[ "$feature" == rp1-amp-proc1-profile || "$feature" == rp1-amp-proc1-local-stack ]]; then admission_args+=(--amp-proc1-profile); fi
-        if [[ "$feature" == rp1-amp-proc1-local-stack ]]; then admission_args+=(--amp-proc1-local-stack); fi
+        if [[ "$feature" == rp1-amp-proc1-profile || "$feature" == rp1-amp-proc1-local-stack || "$feature" == rp1-amp-proc1-no-hooks ]]; then admission_args+=(--amp-proc1-profile); fi
+        if [[ "$feature" == rp1-amp-proc1-local-stack || "$feature" == rp1-amp-proc1-no-hooks ]]; then admission_args+=(--amp-proc1-local-stack); fi
+        if [[ "$feature" == rp1-amp-proc1-no-hooks ]]; then admission_args+=(--amp-proc1-no-hooks); fi
     fi
     python3 -B tools/test-scmi-linux-preloaded.py "${admission_args[@]}" --dtb "$RP1_TIME_ANCHOR_DTB"
     if [[ "$family" == rp1-amp-proc1 || "$family" == rp1-amp-observation ]]; then
         : "${RP1_AMP_SERVICE_REFERENCE:?set the retained phase0 ELF for inspector regression}"
         image_args=()
         if [[ "$family" == rp1-amp-observation ]]; then image_args+=(--amp-observation); fi
-        if [[ "$feature" == rp1-amp-proc1-profile || "$feature" == rp1-amp-proc1-local-stack ]]; then image_args+=(--amp-proc1-profile); fi
+        if [[ "$feature" == rp1-amp-proc1-profile || "$feature" == rp1-amp-proc1-local-stack || "$feature" == rp1-amp-proc1-no-hooks ]]; then image_args+=(--amp-proc1-profile); fi
         python3 -B tools/test-amp-proc1-image.py --firmware "$RP1_AMP_SERVICE_ELF" --service-firmware "$RP1_AMP_SERVICE_REFERENCE" "${image_args[@]}"
         sha256sum "$RP1_AMP_SERVICE_REFERENCE" > "$out/input-service-elf.sha256"
     fi

@@ -33,6 +33,8 @@ rp1-amp-observation = ["rp1-amp-proc1"]
 rp1-amp-proc1-profile = ["rp1-amp-observation"]
 # Diagnostic: profiler firmware whose C1 stack is in proc-local DSRAM.
 rp1-amp-proc1-local-stack = ["rp1-amp-proc1-profile"]
+# Diagnostic: DSRAM stack with the per-iteration profiler hooks compiled out.
+rp1-amp-proc1-no-hooks = ["rp1-amp-proc1-local-stack"]
 rp1-rtos-watchdog-receipt = ["rp1-rtos-record"]
 rp1-rtos-watchdog-quiescence = ["rp1-rtos-watchdog-receipt"]
 rp1-rtos-soak = ["rp1-rtos-record"]
