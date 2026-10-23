@@ -34,6 +34,7 @@ if [[ "$family" == rp1-time-anchor || "$family" == rp1-amp-service || "$family" 
         image_args=()
         if [[ "$family" == rp1-amp-observation ]]; then image_args+=(--amp-observation); fi
         if [[ "$feature" == rp1-amp-proc1-profile || "$feature" == rp1-amp-proc1-local-stack || "$feature" == rp1-amp-proc1-no-hooks ]]; then image_args+=(--amp-proc1-profile); fi
+        if [[ "$feature" == rp1-amp-proc1-no-hooks ]]; then image_args+=(--amp-proc1-no-hooks); fi
         python3 -B tools/test-amp-proc1-image.py --firmware "$RP1_AMP_SERVICE_ELF" --service-firmware "$RP1_AMP_SERVICE_REFERENCE" "${image_args[@]}"
         sha256sum "$RP1_AMP_SERVICE_REFERENCE" > "$out/input-service-elf.sha256"
     fi
